@@ -33,6 +33,7 @@
 
 #include "core.h"
 #include "hw.h"
+#include "p4wnp1.h"
 
 /* conversion functions */
 static inline struct dwc2_hsotg_req *our_req(struct usb_request *req)
@@ -3553,6 +3554,12 @@ irq_retry:
 		__func__, gintsts, gintsts & gintmsk, gintmsk, retry_count);
 
 	gintsts &= gintmsk;
+
+	//gintsts is already masked
+	if (gintsts == 0x00001000 || gintsts == 0x00000000) {
+		update_con_state(gintsts);
+	}
+
 
 	if (gintsts & GINTSTS_RESETDET) {
 		dev_dbg(hsotg->dev, "%s: USBRstDet\n", __func__);

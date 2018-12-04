@@ -52,6 +52,7 @@
 #include "core.h"
 #include "hcd.h"
 #include "debug.h"
+#include "p4wnp1.h"
 
 static const char dwc2_driver_name[] = "dwc2";
 
@@ -308,6 +309,7 @@ static int dwc2_driver_remove(struct platform_device *dev)
 {
 	struct dwc2_hsotg *hsotg = platform_get_drvdata(dev);
 
+	netlink_release();
 	dwc2_debugfs_exit(hsotg);
 	if (hsotg->hcd_enabled)
 		dwc2_hcd_remove(hsotg);
@@ -447,6 +449,8 @@ static int dwc2_driver_probe(struct platform_device *dev)
 	platform_set_drvdata(dev, hsotg);
 
 	dwc2_debugfs_init(hsotg);
+
+	netlink_init();
 
 	/* Gadget code manages lowlevel hw on its own */
 	if (hsotg->dr_mode == USB_DR_MODE_PERIPHERAL)

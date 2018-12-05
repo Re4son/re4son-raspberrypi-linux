@@ -3560,7 +3560,6 @@ irq_retry:
 		update_con_state(gintsts);
 	}
 
-
 	if (gintsts & GINTSTS_RESETDET) {
 		dev_dbg(hsotg->dev, "%s: USBRstDet\n", __func__);
 

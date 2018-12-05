@@ -611,25 +611,6 @@ struct wireless_dev *brcmf_mon_add_vif(struct wiphy *wiphy, const char *name,
 	/* MaMe82 */
 	/*
 		Inform the kernel that the PHY interface supports STA, MONITOR and AP.
-		
-		Problem: hostapd tries to setup an additional monitor interface (default
-		driver doesn't allow this and returns ERROR NOT SUPPORTED). 
-		We can't disable the NL80211_IFTYPE_MONITOR bit to mimic the default driver, 
-		because airodump-ng wouldn't recognize the interface as "monitor capable" anymore. 
-		Allowing an additional monitor interface on the other hand, would result in a timeout
-		when hostapd tries to add a second monitor interface.
-		
-		Solution:
-		We use brcmf_vif_add_validate to return EOPNOTSUPP in case a second monitor interface
-		should be added.
-		
-		Result:
-		Hostapd tries to add two new interfaces one with MONITORMODE (mode 6), the other with
-		AP mode (mode 3). In result brcmf_vif_add_validate returns EOPNOTSUPP.
-		Now hostapd fails over to call brcmf_cfg80211_change_iface with mode 3 (AP) in order
-		to reconfigure the existing interface to MASTER mode, which ultimatly works and
-		we have an access point running with an additional monitor interface.
-		
 	*/
 
 	//ifp->ndev->ieee80211_ptr->wiphy->interface_modes = BIT(NL80211_IFTYPE_MONITOR);
@@ -643,7 +624,6 @@ fail:
 	brcmf_free_vif(vif);
 	return ERR_PTR(err);
 }
-
 
 
 /**
@@ -5894,6 +5874,31 @@ static void brcmf_init_conf(struct brcmf_cfg80211_conf *conf)
 	conf->retry_long = (u32)-1;
 }
 
+s32 brcmf_notify_rx_mgmt_probereq(struct brcmf_if *ifp, const struct brcmf_event_msg *e, void *data)
+{
+       if (e->datalen < 0) {
+               brcmf_err("MaMe82: Event data to small. Ignore\n");
+               return 0;
+       }
+
+       // Firmware sends us two proberesponses, for each idx one. Ignore responses not received on idx 0 
+       if (e->bsscfgidx != 0)
+       {
+               //Log flooding 
+               //brcmf_err("MaMe82: Ignore bsscfgidx not 0\n");
+               return 0;
+       }
+
+       //Log flooding, REMOVE THIS !!!!!       
+       //brcmf_err("PROBEREQ:  e->datalen (%d)\n", e->datalen);
+
+       //Send probe request frame via netlink multicast
+       nl_mcast_send_data((u8 *) (data), e->datalen);
+       
+       return 0;
+}
+
+
 static void brcmf_register_event_handlers(struct brcmf_cfg80211_info *cfg)
 {
 	brcmf_fweh_register(cfg->pub, BRCMF_E_LINK,
@@ -5920,6 +5925,10 @@ static void brcmf_register_event_handlers(struct brcmf_cfg80211_info *cfg)
 			    brcmf_notify_vif_event);
 	brcmf_fweh_register(cfg->pub, BRCMF_E_P2P_PROBEREQ_MSG,
 			    brcmf_p2p_notify_rx_mgmt_p2p_probereq);
+        //MaMe82
+        brcmf_fweh_register(cfg->pub, BRCMF_E_PROBREQ_MSG, brcmf_notify_rx_mgmt_probereq);
+        //end MaMe82
+
 	brcmf_fweh_register(cfg->pub, BRCMF_E_P2P_DISC_LISTEN_COMPLETE,
 			    brcmf_p2p_notify_listen_complete);
 	brcmf_fweh_register(cfg->pub, BRCMF_E_ACTION_FRAME_RX,
@@ -7061,8 +7070,17 @@ static void brcmf_cfg80211_reg_notifier(struct wiphy *wiphy,
 	if (req->alpha2[0] == '0' && req->alpha2[1] == '0')
 		return;
 
+	/* MaMe82 */
+	/*
+	reg->alpha2 is: char alpha2[3], but ISO3166-1 defines alpha2 as two char code
+	It is likely that the 3rd char was meant to store a terminating 0x00, but asserting
+	'A' <= alpha[2] <= 'Z' would be bulls**t in this case. So let's only check the first two
+	chars
+	*/
+
 	/* ignore non-ISO3166 country codes */
-	for (i = 0; i < sizeof(req->alpha2); i++)
+	//for (i = 0; i < sizeof(req->alpha2); i++)
+	for (i = 0; i < 2; i++)
 		if (req->alpha2[i] < 'A' || req->alpha2[i] > 'Z') {
 			if (req->alpha2[0] == '0' && req->alpha2[1] == '0')
 				return;
@@ -7286,6 +7304,9 @@ struct brcmf_cfg80211_info *brcmf_cfg80211_attach(struct brcmf_pub *drvr,
 			wiphy->features |= NL80211_FEATURE_ND_RANDOM_MAC_ADDR;
 #endif
 	}
+
+	// propagate AP SME support, to avoid the need of bringing up a monitor interface BEFORE starting hostapd (must be up to report ERRNSUPP when hostapd tries to add a second one)
+	wiphy->flags |= WIPHY_FLAG_HAVE_AP_SME;
 
 	return cfg;
 

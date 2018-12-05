@@ -215,5 +215,6 @@ void brcmf_netif_rx(struct brcmf_if *ifp, struct sk_buff *skb);
 void brcmf_net_setcarrier(struct brcmf_if *ifp, bool on);
 int __init brcmf_core_init(void);
 void __exit brcmf_core_exit(void);
+void nl_mcast_send_data(u8 *data, u32 len);
 
 #endif /* BRCMFMAC_CORE_H */

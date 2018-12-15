@@ -16,10 +16,8 @@
 # CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ccflags-y += \
-        -Idrivers/net/wireless/broadcom/brcm80211/brcmfmac      \
-        -Idrivers/net/wireless/broadcom/brcm80211/include
-
-ccflags-$(CONFIG_BRCMDBG)	+= -DDEBUG
+	-Idrivers/net/wireless/broadcom/brcm80211/brcmfmac	\
+	-Idrivers/net/wireless/broadcom/brcm80211/include
 
 obj-$(CONFIG_BRCMFMAC) += brcmfmac.o
 brcmfmac-objs += \

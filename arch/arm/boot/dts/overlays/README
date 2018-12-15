@@ -89,9 +89,19 @@ Params:
         audio                   Set to "on" to enable the onboard ALSA audio
                                 interface (default "off")
 
+        axiperf                 Set to "on" to enable the AXI bus performance
+                                monitors.
+                                See /sys/kernel/debug/raspberrypi_axi_monitor
+                                for the results.
+
         eee                     Enable Energy Efficient Ethernet support for
                                 compatible devices (default "on"). See also
                                 "tx_lpi_timer".
+
+        eth_downshift_after     Set the number of auto-negotiation failures
+                                after which the 1000Mbps modes are disabled.
+                                Legal values are 2, 3, 4, 5 and 0, where
+                                0 means never downshift (default 2).
 
         eth_led0                Set mode of LED0 (usually orange) (default
                                 "1"). The legal values are:
@@ -102,6 +112,10 @@ Params:
 
         eth_led1                Set mode of LED1 (usually green) (default
                                 "6"). See eth_led0 for legal values.
+
+        eth_max_speed           Set the maximum speed a link is allowed
+                                to negotiate. Legal values are 10, 100 and
+                                1000 (default 1000).
 
         i2c_arm                 Set to "on" to enable the ARM's i2c interface
                                 (default "off")
@@ -183,6 +197,12 @@ Params:
         but deprecated because the ARM/VC assignments differ between board
         revisions. The same board-specific mapping applies to i2c_baudrate,
         and the other i2c baudrate parameters.
+
+
+Name:   3dlab-nano-player
+Info:   Configures the 3Dlab Nano Player
+Load:   dtoverlay=3dlab-nano-player
+Params: <None>
 
 
 Name:   adau1977-adc
@@ -1978,6 +1998,14 @@ Params: speed                   Display SPI bus speed
                 dtoverlay=tinylcd35,touch,rtc-pcf,keypad
             Old touch display:
                 dtoverlay=tinylcd35,touch,touchgpio=3
+
+
+Name:   tpm-slb9670
+Info:   Enables support for Infineon SLB9670 Trusted Platform Module add-on
+        boards, which can be used as a secure key storage and hwrng,
+        available as "Iridium SLB9670" by Infineon and "LetsTrust TPM" by pi3g.
+Load:   dtoverlay=tpm-slb9670
+Params: <None>
 
 
 Name:   uart0

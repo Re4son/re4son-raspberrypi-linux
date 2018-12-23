@@ -1055,7 +1055,6 @@ EXTRA_CFLAGS += -DMARK_KERNEL_PFU
 # We'll go with the default on 64bit
 else ifneq ($(CONFIG_ARM64), y)
 EXTRA_CFLAGS += -mfloat-abi=softfp
- We don't use any of those flags for arm64
 endif
 endif
 

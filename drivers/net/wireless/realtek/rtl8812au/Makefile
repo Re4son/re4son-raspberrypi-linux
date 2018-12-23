@@ -114,9 +114,14 @@ CONFIG_RTW_SDIO_PM_KEEP_POWER = y
 ###################### MP HW TX MODE FOR VHT #######################
 CONFIG_MP_VHT_HW_TX_MODE = y
 ###################### Platform Related #######################
-CONFIG_PLATFORM_I386_PC = y
-CONFIG_PLATFORM_ARM_RPI = n
-CONFIG_PLATFORM_ARM64_RPI = n
+CONFIG_PLATFORM_I386_PC = n		
+ifeq ($(CONFIG_ARM64), y)
+    CONFIG_PLATFORM_ARM64_RPI = y
+    CONFIG_PLATFORM_ARM_RPI = n
+else
+    CONFIG_PLATFORM_ARM_RPI = y
+    CONFIG_PLATFORM_ARM64_RPI = n
+endif
 CONFIG_PLATFORM_ANDROID_X86 = n
 CONFIG_PLATFORM_ANDROID_INTEL_X86 = n
 CONFIG_PLATFORM_JB_X86 = n
@@ -1044,11 +1049,13 @@ ifeq ($(CONFIG_PLATFORM_I386_PC), y)
 ## For I386 X86 ToolChain use Hardware FLOATING
 EXTRA_CFLAGS += -mhard-float
 EXTRA_CFLAGS += -DMARK_KERNEL_PFU
-else
 ## For ARM ToolChain use Hardware FLOATING
-# Raspbian kernel is with soft-float.
+# 32bit Raspbian kernel is with soft-float.
 # 'softfp' allows FP instructions, but no FP on function call interfaces
+# We'll go with the default on 64bit
+else ifneq ($(CONFIG_ARM64), y)
 EXTRA_CFLAGS += -mfloat-abi=softfp
+ We don't use any of those flags for arm64
 endif
 endif
 

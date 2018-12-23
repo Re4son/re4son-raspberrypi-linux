@@ -58,10 +58,8 @@ CONFIG_WCN36XX_DEBUGFS=y
 #Ralink
 CONFIG_RT2X00_DEBUG=y
 #Realtek
-CONFIG_RTL8XXXU_UNTESTED=y
-# rtl8812au still throws some floating point errors on compile
-# let's disable it for now
-#CONFIG_RTL8812AU=m
+CONFIG_RTL8XXXU=m
+CONFIG_RTL8812AU=m
 ##CONFIG_RTL8814AU=m
 CONFIG_RTL8188EU=m
 #IEEE 802.15.4

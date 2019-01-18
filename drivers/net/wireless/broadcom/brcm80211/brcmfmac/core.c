@@ -17,11 +17,13 @@
 #include <linux/kernel.h>
 #include <linux/etherdevice.h>
 #include <linux/module.h>
+/* NEXMON */
+#include <linux/if_arp.h>
+#include <linux/netlink.h>
 #include <linux/inetdevice.h>
 #include <net/cfg80211.h>
 #include <net/rtnetlink.h>
 #include <net/addrconf.h>
-#include <net/ieee80211_radiotap.h>
 #include <net/ipv6.h>
 #include <brcmu_utils.h>
 #include <brcmu_wifi.h>
@@ -38,10 +40,93 @@
 #include "proto.h"
 #include "pcie.h"
 #include "common.h"
+/* NEXMON */
+#include "nexmon_ioctls.h"
 
 #define MAX_WAIT_FOR_8021X_TX			msecs_to_jiffies(950)
 
 #define BRCMF_BSSIDX_INVALID			-1
+
+/* Nexmon */
+#define NETLINK_USER                     31
+#define NEXUDP_IOCTL                      0
+
+#define MONITOR_DISABLED  0
+#define MONITOR_IEEE80211 1
+#define MONITOR_RADIOTAP  2
+#define MONITOR_LOG_ONLY  3
+#define MONITOR_DROP_FRM  4
+#define MONITOR_IPV4_UDP  5
+
+/*NEXMON*/
+static struct netlink_kernel_cfg cfg = {0};
+static struct sock *nl_sock = NULL;
+static struct net_device *ndev_global = NULL;
+
+struct nexudp_header {
+    char nex[3];
+    char type;
+    int securitycookie;
+} __attribute__((packed));
+
+struct nexudp_ioctl_header {
+    struct nexudp_header nexudphdr;
+    unsigned int cmd;
+    unsigned int set;
+    char payload[1];
+} __attribute__((packed));
+
+static void
+nexmon_nl_ioctl_handler(struct sk_buff *skb)
+{
+    struct nlmsghdr *nlh = (struct nlmsghdr *) skb->data;
+    struct nexudp_ioctl_header *frame = (struct nexudp_ioctl_header *) nlmsg_data(nlh);
+    struct brcmf_if *ifp = netdev_priv(ndev_global);
+    struct sk_buff *skb_out;
+    struct nlmsghdr *nlh_tx;
+
+    brcmf_err("NEXMON: %s: Enter\n", __FUNCTION__);
+
+    brcmf_err("NEXMON: %s: %08x %d %d\n", __FUNCTION__, *(int *) frame->nexudphdr.nex, nlmsg_len(nlh), skb->len);
+
+    if (memcmp(frame->nexudphdr.nex, "NEX", 3)) {
+        brcmf_err("NEXMON: %s: invalid nexudp_ioctl_header\n", __FUNCTION__);
+        return;
+    }
+
+    if (frame->nexudphdr.type != NEXUDP_IOCTL) {
+        brcmf_err("NEXMON: %s: invalid frame type\n", __FUNCTION__);
+        return;
+    }
+
+    if (ifp == NULL) {
+        brcmf_err("NEXMON: %s: ifp is NULL\n", __FUNCTION__);
+        return;
+    }
+
+    if (frame->set) {
+        brcmf_err("NEXMON: %s: calling brcmf_fil_cmd_data_set, cmd: %d\n", __FUNCTION__, frame->cmd);
+        brcmf_fil_cmd_data_set(ifp, frame->cmd, frame->payload, nlmsg_len(nlh) - sizeof(struct nexudp_ioctl_header) + sizeof(char));
+
+        skb_out = nlmsg_new(4, 0);
+        nlh_tx = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, 4, 0);
+        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
+        memcpy(nlmsg_data(nlh_tx), "ACK", 4);
+        nlmsg_unicast(nl_sock, skb_out, nlh->nlmsg_pid);
+    } else {
+        brcmf_err("NEXMON: %s: calling brcmf_fil_cmd_data_get, cmd: %d\n", __FUNCTION__, frame->cmd);
+        brcmf_fil_cmd_data_get(ifp, frame->cmd, frame->payload, nlmsg_len(nlh) - sizeof(struct nexudp_ioctl_header) + sizeof(char));
+
+        skb_out = nlmsg_new(nlmsg_len(nlh), 0);
+        nlh_tx = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, nlmsg_len(nlh), 0);
+        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
+        memcpy(nlmsg_data(nlh_tx), frame, nlmsg_len(nlh));
+        nlmsg_unicast(nl_sock, skb_out, nlh->nlmsg_pid);
+    }
+
+    brcmf_err("NEXMON: %s: Exit\n", __FUNCTION__);
+}
+
 
 char *brcmf_ifname(struct brcmf_if *ifp)
 {
@@ -232,37 +317,6 @@ static void brcmf_netdev_set_multicast_list(struct net_device *ndev)
 	schedule_work(&ifp->multicast_work);
 }
 
-/**
- * brcmf_skb_is_iapp - checks if skb is an IAPP packet
- *
- * @skb: skb to check
- */
-static bool brcmf_skb_is_iapp(struct sk_buff *skb)
-{
-	static const u8 iapp_l2_update_packet[6] __aligned(2) = {
-		0x00, 0x01, 0xaf, 0x81, 0x01, 0x00,
-	};
-	unsigned char *eth_data;
-#if !defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
-	const u16 *a, *b;
-#endif
-
-	if (skb->len - skb->mac_len != 6 ||
-	    !is_multicast_ether_addr(eth_hdr(skb)->h_dest))
-		return false;
-
-	eth_data = skb_mac_header(skb) + ETH_HLEN;
-#if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
-	return !(((*(const u32 *)eth_data) ^ (*(const u32 *)iapp_l2_update_packet)) |
-		 ((*(const u16 *)(eth_data + 4)) ^ (*(const u16 *)(iapp_l2_update_packet + 4))));
-#else
-	a = (const u16 *)eth_data;
-	b = (const u16 *)iapp_l2_update_packet;
-
-	return !((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]));
-#endif
-}
-
 static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 					   struct net_device *ndev)
 {
@@ -280,23 +334,6 @@ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 		netif_stop_queue(ndev);
 		dev_kfree_skb(skb);
 		ret = -ENODEV;
-		goto done;
-	}
-
-	/* Some recent Broadcom's firmwares disassociate STA when they receive
-	 * an 802.11f ADD frame. This behavior can lead to a local DoS security
-	 * issue. Attacker may trigger disassociation of any STA by sending a
-	 * proper Ethernet frame to the wireless interface.
-	 *
-	 * Moreover this feature may break AP interfaces in some specific
-	 * setups. This applies e.g. to the bridge with hairpin mode enabled and
-	 * IFLA_BRPORT_MCAST_TO_UCAST set. IAPP packet generated by a firmware
-	 * will get passed back to the wireless interface and cause immediate
-	 * disassociation of a just-connected STA.
-	 */
-	if (!drvr->settings->iapp && brcmf_skb_is_iapp(skb)) {
-		dev_kfree_skb(skb);
-		ret = -EINVAL;
 		goto done;
 	}
 
@@ -375,15 +412,6 @@ void brcmf_txflowblock_if(struct brcmf_if *ifp,
 
 void brcmf_netif_rx(struct brcmf_if *ifp, struct sk_buff *skb)
 {
-	/* Most of Broadcom's firmwares send 802.11f ADD frame every time a new
-	 * STA connects to the AP interface. This is an obsoleted standard most
-	 * users don't use, so don't pass these frames up unless requested.
-	 */
-	if (!ifp->drvr->settings->iapp && brcmf_skb_is_iapp(skb)) {
-		brcmu_pkt_buf_free_skb(skb);
-		return;
-	}
-
 	if (skb->pkt_type == PACKET_MULTICAST)
 		ifp->ndev->stats.multicast++;
 
@@ -404,30 +432,6 @@ void brcmf_netif_rx(struct brcmf_if *ifp, struct sk_buff *skb)
 		 * the NET_RX_SOFTIRQ.  This is handled by netif_rx_ni().
 		 */
 		netif_rx_ni(skb);
-}
-
-void brcmf_netif_mon_rx(struct brcmf_if *ifp, struct sk_buff *skb)
-{
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MONITOR_FMT_RADIOTAP)) {
-		/* Do nothing */
-	} else {
-		struct ieee80211_radiotap_header *radiotap;
-
-		/* TODO: use RX status to fill some radiotap data */
-		radiotap = skb_push(skb, sizeof(*radiotap));
-		memset(radiotap, 0, sizeof(*radiotap));
-		radiotap->it_len = cpu_to_le16(sizeof(*radiotap));
-
-		/* TODO: 4 bytes with receive status? */
-		skb->len -= 4;
-	}
-
-	skb->dev = ifp->ndev;
-	skb_reset_mac_header(skb);
-	skb->pkt_type = PACKET_OTHERHOST;
-	skb->protocol = htons(ETH_P_802_2);
-
-	brcmf_netif_rx(ifp, skb);
 }
 
 static int brcmf_rx_hdrpull(struct brcmf_pub *drvr, struct sk_buff *skb,
@@ -571,7 +575,8 @@ static int brcmf_netdev_open(struct net_device *ndev)
 	}
 
 	/* Clear, carrier, set when connected or AP mode. */
-	netif_carrier_off(ndev);
+	/*NEXMON*/
+	//netif_carrier_off(ndev);
 	return 0;
 }
 
@@ -592,6 +597,9 @@ int brcmf_net_attach(struct brcmf_if *ifp, bool rtnl_locked)
 	brcmf_dbg(TRACE, "Enter, bsscfgidx=%d mac=%pM\n", ifp->bsscfgidx,
 		  ifp->mac_addr);
 	ndev = ifp->ndev;
+
+	/* NEXMON */
+	ndev_global = ndev;
 
 	/* set appropriate operations */
 	ndev->netdev_ops = &brcmf_netdev_ops_pri;
@@ -997,6 +1005,55 @@ static int brcmf_inet6addr_changed(struct notifier_block *nb,
 }
 #endif
 
+int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
+{
+	struct brcmf_pub *drvr = NULL;
+	int ret = 0;
+	int i;
+
+	brcmf_dbg(TRACE, "Enter\n");
+
+	/* Allocate primary brcmf_info */
+	drvr = kzalloc(sizeof(struct brcmf_pub), GFP_ATOMIC);
+	if (!drvr)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(drvr->if2bss); i++)
+		drvr->if2bss[i] = BRCMF_BSSIDX_INVALID;
+
+	mutex_init(&drvr->proto_block);
+
+	/* Link to bus module */
+	drvr->hdrlen = 0;
+	drvr->bus_if = dev_get_drvdata(dev);
+	drvr->bus_if->drvr = drvr;
+	drvr->settings = settings;
+
+	/* attach debug facilities */
+	brcmf_debug_attach(drvr);
+
+	/* Attach and link in the protocol */
+	ret = brcmf_proto_attach(drvr);
+	if (ret != 0) {
+		brcmf_err("brcmf_prot_attach failed\n");
+		goto fail;
+	}
+
+	/* Attach to events important for core code */
+	brcmf_fweh_register(drvr, BRCMF_E_PSM_WATCHDOG,
+			    brcmf_psm_watchdog_notify);
+
+	/* attach firmware event handler */
+	brcmf_fweh_attach(drvr);
+
+	return ret;
+
+fail:
+	brcmf_detach(dev);
+
+	return ret;
+}
+
 static int brcmf_revinfo_read(struct seq_file *s, void *data)
 {
 	struct brcmf_bus *bus_if = dev_get_drvdata(s->private);
@@ -1007,7 +1064,8 @@ static int brcmf_revinfo_read(struct seq_file *s, void *data)
 	seq_printf(s, "vendorid: 0x%04x\n", ri->vendorid);
 	seq_printf(s, "deviceid: 0x%04x\n", ri->deviceid);
 	seq_printf(s, "radiorev: %s\n", brcmu_dotrev_str(ri->radiorev, drev));
-	seq_printf(s, "chip: %s\n", ri->chipname);
+	seq_printf(s, "chipnum: %u (%x)\n", ri->chipnum, ri->chipnum);
+	seq_printf(s, "chiprev: %u\n", ri->chiprev);
 	seq_printf(s, "chippkg: %u\n", ri->chippkg);
 	seq_printf(s, "corerev: %u\n", ri->corerev);
 	seq_printf(s, "boardid: 0x%04x\n", ri->boardid);
@@ -1021,15 +1079,14 @@ static int brcmf_revinfo_read(struct seq_file *s, void *data)
 	seq_printf(s, "anarev: %u\n", ri->anarev);
 	seq_printf(s, "nvramrev: %08x\n", ri->nvramrev);
 
-	seq_printf(s, "clmver: %s\n", bus_if->drvr->clmver);
-
 	return 0;
 }
 
-static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
+int brcmf_bus_started(struct device *dev)
 {
 	int ret = -1;
-	struct brcmf_bus *bus_if = drvr->bus_if;
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pub *drvr = bus_if->drvr;
 	struct brcmf_if *ifp;
 	struct brcmf_if *p2p_ifp;
 
@@ -1045,16 +1102,20 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 	/* signal bus ready */
 	brcmf_bus_change_state(bus_if, BRCMF_BUS_UP);
 
-	/* do bus specific preinit here */
-	ret = brcmf_bus_preinit(bus_if);
-	if (ret < 0)
-		goto fail;
-
 	/* Bus is ready, do any initialization */
 	ret = brcmf_c_preinit_dcmds(ifp);
 	if (ret < 0)
 		goto fail;
 
+	brcmf_debugfs_add_entry(drvr, "revinfo", brcmf_revinfo_read);
+
+	/* assure we have chipid before feature attach */
+	if (!bus_if->chip) {
+		bus_if->chip = drvr->revinfo.chipnum;
+		bus_if->chiprev = drvr->revinfo.chiprev;
+		brcmf_dbg(INFO, "firmware revinfo: chip %x (%d) rev %d\n",
+			  bus_if->chip, bus_if->chip, bus_if->chiprev);
+	}
 	brcmf_feat_attach(drvr);
 
 	ret = brcmf_proto_init_done(drvr);
@@ -1063,7 +1124,7 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 
 	brcmf_proto_add_if(drvr, ifp);
 
-	drvr->config = brcmf_cfg80211_attach(drvr, ops,
+	drvr->config = brcmf_cfg80211_attach(drvr, bus_if->dev,
 					     drvr->settings->p2p_enable);
 	if (drvr->config == NULL) {
 		ret = -ENOMEM;
@@ -1097,11 +1158,6 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 #endif
 #endif /* CONFIG_INET */
 
-	/* populate debugfs */
-	brcmf_debugfs_add_entry(drvr, "revinfo", brcmf_revinfo_read);
-	brcmf_feat_debugfs_create(drvr);
-	brcmf_proto_debugfs_create(drvr);
-
 	return 0;
 
 fail:
@@ -1117,69 +1173,6 @@ fail:
 	drvr->iflist[1] = NULL;
 	if (drvr->settings->ignore_probe_fail)
 		ret = 0;
-
-	return ret;
-}
-
-int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
-{
-	struct wiphy *wiphy;
-	struct cfg80211_ops *ops;
-	struct brcmf_pub *drvr = NULL;
-	int ret = 0;
-	int i;
-
-	brcmf_dbg(TRACE, "Enter\n");
-
-	ops = brcmf_cfg80211_get_ops(settings);
-	if (!ops)
-		return -ENOMEM;
-
-	wiphy = wiphy_new(ops, sizeof(*drvr));
-	if (!wiphy)
-		return -ENOMEM;
-
-	set_wiphy_dev(wiphy, dev);
-	drvr = wiphy_priv(wiphy);
-	drvr->wiphy = wiphy;
-
-	for (i = 0; i < ARRAY_SIZE(drvr->if2bss); i++)
-		drvr->if2bss[i] = BRCMF_BSSIDX_INVALID;
-
-	mutex_init(&drvr->proto_block);
-
-	/* Link to bus module */
-	drvr->hdrlen = 0;
-	drvr->bus_if = dev_get_drvdata(dev);
-	drvr->bus_if->drvr = drvr;
-	drvr->settings = settings;
-
-	/* Attach and link in the protocol */
-	ret = brcmf_proto_attach(drvr);
-	if (ret != 0) {
-		brcmf_err("brcmf_prot_attach failed\n");
-		goto fail;
-	}
-
-	/* Attach to events important for core code */
-	brcmf_fweh_register(drvr, BRCMF_E_PSM_WATCHDOG,
-			    brcmf_psm_watchdog_notify);
-
-	/* attach firmware event handler */
-	brcmf_fweh_attach(drvr);
-
-	ret = brcmf_bus_started(drvr, ops);
-	if (ret != 0) {
-		brcmf_err("dongle is not responding: err=%d\n", ret);
-		goto fail;
-	}
-
-	drvr->config->ops = ops;
-	return 0;
-
-fail:
-	brcmf_detach(dev);
-	kfree(ops);
 
 	return ret;
 }
@@ -1204,14 +1197,6 @@ void brcmf_dev_reset(struct device *dev)
 
 	if (drvr->iflist[0])
 		brcmf_fil_cmd_int_set(drvr->iflist[0], BRCMF_C_TERMINATED, 1);
-}
-
-void brcmf_dev_coredump(struct device *dev)
-{
-	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
-
-	if (brcmf_debug_create_memdump(bus_if, NULL, 0) < 0)
-		brcmf_dbg(TRACE, "failed to create coredump\n");
 }
 
 void brcmf_detach(struct device *dev)
@@ -1245,14 +1230,14 @@ void brcmf_detach(struct device *dev)
 		brcmf_remove_interface(drvr->iflist[i], false);
 
 	brcmf_cfg80211_detach(drvr->config);
-	drvr->config = NULL;
 
 	brcmf_bus_stop(drvr->bus_if);
 
 	brcmf_proto_detach(drvr);
 
+	brcmf_debug_detach(drvr);
 	bus_if->drvr = NULL;
-	wiphy_free(drvr->wiphy);
+	kfree(drvr);
 }
 
 s32 brcmf_iovar_data_set(struct device *dev, char *name, void *data, u32 len)
@@ -1289,12 +1274,6 @@ void brcmf_bus_change_state(struct brcmf_bus *bus, enum brcmf_bus_state state)
 	int ifidx;
 
 	brcmf_dbg(TRACE, "%d -> %d\n", bus->state, state);
-
-	if (!drvr) {
-		brcmf_dbg(INFO, "ignoring transition, bus not attached yet\n");
-		return;
-	}
-
 	bus->state = state;
 
 	if (state == BRCMF_BUS_UP) {
@@ -1328,11 +1307,22 @@ int __init brcmf_core_init(void)
 	if (!schedule_work(&brcmf_driver_work))
 		return -EBUSY;
 
+	/* NEXMON netlink init */
+	cfg.input = nexmon_nl_ioctl_handler;
+	nl_sock = netlink_kernel_create(&init_net, NETLINK_USER, &cfg);
+	if (!nl_sock) {
+		brcmf_err("NEXMON: %s: Error creating netlink socket\n", __FUNCTION__);
+		return -1;
+	}
+
 	return 0;
 }
 
 void __exit brcmf_core_exit(void)
 {
+	/*NEXMON netlink */
+	netlink_kernel_release(nl_sock);
+
 	cancel_work_sync(&brcmf_driver_work);
 
 #ifdef CONFIG_BRCMFMAC_SDIO

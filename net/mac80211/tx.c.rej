@@ -1,0 +1,14 @@
+--- net/mac80211/tx.c
++++ net/mac80211/tx.c
+@@ -1659,10 +1651,7 @@ void ieee80211_xmit(struct ieee80211_sub
+ 		}
+ 	}
+ 
+-        // Don't overwrite QoS header in monitor mode
+-        if (likely(info->control.vif->type != NL80211_IFTYPE_MONITOR)) {
+-            ieee80211_set_qos_hdr(sdata, skb);
+-        }
++	ieee80211_set_qos_hdr(sdata, skb);
+ 	ieee80211_tx(sdata, sta, skb, false);
+ }
+ 

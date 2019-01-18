@@ -99,9 +99,14 @@ CONFIG_RTW_SDIO_PM_KEEP_POWER = y
 ###################### MP HW TX MODE FOR VHT #######################
 CONFIG_MP_VHT_HW_TX_MODE = n
 ###################### Platform Related #######################
-CONFIG_PLATFORM_I386_PC = y
-CONFIG_PLATFORM_ARM_RPI = n
-CONFIG_PLATFORM_ARM64_RPI = n
+CONFIG_PLATFORM_I386_PC = n
+ifeq ($(CONFIG_ARM64), y)
+    CONFIG_PLATFORM_ARM64_RPI = y
+    CONFIG_PLATFORM_ARM_RPI = n
+else
+    CONFIG_PLATFORM_ARM_RPI = y
+    CONFIG_PLATFORM_ARM64_RPI = n
+endif
 CONFIG_PLATFORM_ANDROID_X86 = n
 CONFIG_PLATFORM_ANDROID_INTEL_X86 = n
 CONFIG_PLATFORM_JB_X86 = n
@@ -284,7 +289,7 @@ _BTC_FILES += hal/btc/halbtc8192e1ant.o \
 				hal/btc/halbtc8821c2ant.o
 endif
 
-include $(TopDIR)/hal/phydm/phydm.mk
+include $(TopDIR)/drivers/net/wireless/realtek/rtl8812au/hal/phydm/phydm.mk
 
 ########### HAL_RTL8812A_RTL8821A #################################
 ifneq ($(CONFIG_RTL8812A)_$(CONFIG_RTL8821A), n_n)

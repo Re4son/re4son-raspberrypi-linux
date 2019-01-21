@@ -56,7 +56,7 @@
 #define CBUF_LEN	(128)
 
 /* Device console log buffer state */
-#define CONSOLE_BUFFER_MAX	4096
+#define CONSOLE_BUFFER_MAX	2024
 
 struct rte_log_le {
 	__le32 buf;		/* Can't be pointer on (64-bit) hosts */
@@ -4265,6 +4265,13 @@ void brcmf_sdio_remove(struct brcmf_sdio *bus)
 	brcmf_dbg(TRACE, "Enter\n");
 
 	if (bus) {
+		/* Stop watchdog task */
+		if (bus->watchdog_tsk) {
+			send_sig(SIGTERM, bus->watchdog_tsk, 1);
+			kthread_stop(bus->watchdog_tsk);
+			bus->watchdog_tsk = NULL;
+		}
+
 		/* De-register interrupt handler */
 		brcmf_sdiod_intr_unregister(bus->sdiodev);
 

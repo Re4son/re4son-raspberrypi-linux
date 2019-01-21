@@ -35,6 +35,10 @@
 				/* #define MAX_RECVBUF_SZ (10240)  */ /* 10K */
 				/* #define MAX_RECVBUF_SZ (16384) */ /* 16k - 92E RX BUF :16K */
 				/* #define MAX_RECVBUF_SZ (8192+1024) */ /* 8K+1k		 */
+				#ifdef CONFIG_PLATFORM_NOVATEK_NT72668
+					#undef MAX_RECVBUF_SZ
+					#define MAX_RECVBUF_SZ (15360) /* 15k < 16k */
+				#endif /* CONFIG_PLATFORM_NOVATEK_NT72668 */
 			#endif
 		#endif
 	#endif /* !MAX_RECVBUF_SZ */
@@ -138,6 +142,12 @@
 #define GET_RX_STATUS_DESC_PATTERN_MATCH_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+12, 29, 1)
 #define GET_RX_STATUS_DESC_UNICAST_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+12, 30, 1)
 #define GET_RX_STATUS_DESC_MAGIC_WAKE_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+12, 31, 1)
+
+/* DWORD 6 */
+#define GET_RX_STATUS_DESC_SPLCP_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+16, 0, 1)
+#define GET_RX_STATUS_DESC_LDPC_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+16, 1, 1)
+#define GET_RX_STATUS_DESC_STBC_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+16, 2, 1)
+#define GET_RX_STATUS_DESC_BW_92E(__pRxDesc)			LE_BITS_TO_4BYTE(__pRxDesc+16, 4, 2)
 
 
 /* DWORD 5 */

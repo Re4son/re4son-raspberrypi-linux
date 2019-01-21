@@ -1370,7 +1370,7 @@ static int proc_get_macid_info(struct seq_file *m, void *v)
 	_adapter *adapter = (_adapter *)rtw_netdev_priv(dev);
 	struct dvobj_priv *dvobj = adapter_to_dvobj(adapter);
 	struct macid_ctl_t *macid_ctl = dvobj_to_macidctl(dvobj);
-	struct hal_spec_t *hal_spec = GET_HAL_SPEC(adapter);
+	u8 chip_type = rtw_get_chip_type(adapter);
 	u8 i;
 	u8 null_addr[ETH_ALEN] = {0};
 	u8 *macaddr;
@@ -1382,10 +1382,10 @@ static int proc_get_macid_info(struct seq_file *m, void *v)
 	dump_macid_map(m, &macid_ctl->used, macid_ctl->num);
 	RTW_PRINT_SEL(m, "\n");
 
-	RTW_PRINT_SEL(m, "%-3s %-3s %-5s %-4s %-17s %-6s %-3s"
-		, "id", "bmc", "ifbmp", "ch_g", "macaddr", "bw", "vht");
+	RTW_PRINT_SEL(m, "%-3s %-3s %-4s %-4s %-17s %-6s %-3s"
+		, "id", "bmc", "if_g", "ch_g", "macaddr", "bw", "vht");
 
-	if (hal_spec->tx_nss_num > 2)
+	if (chip_type == RTL8814A)
 		_RTW_PRINT_SEL(m, " %-10s", "rate_bmp1");
 
 	_RTW_PRINT_SEL(m, " %-10s %s\n", "rate_bmp0", "status");
@@ -1399,17 +1399,17 @@ static int proc_get_macid_info(struct seq_file *m, void *v)
 			else
 				macaddr = null_addr;
 
-			RTW_PRINT_SEL(m, "%3u %3u  0x%02x %4d "MAC_FMT" %6s %3u"
+			RTW_PRINT_SEL(m, "%3u %3u %4d %4d "MAC_FMT" %6s %3u"
 				, i
 				, rtw_macid_is_bmc(macid_ctl, i)
-				, rtw_macid_get_iface_bmp(macid_ctl, i)
+				, rtw_macid_get_if_g(macid_ctl, i)
 				, rtw_macid_get_ch_g(macid_ctl, i)
 				, MAC_ARG(macaddr)
 				, ch_width_str(macid_ctl->bw[i])
 				, macid_ctl->vht_en[i]
 			);
 
-			if (hal_spec->tx_nss_num > 2)
+			if (chip_type == RTL8814A)
 				_RTW_PRINT_SEL(m, " 0x%08X", macid_ctl->rate_bmp1[i]);
 
 			_RTW_PRINT_SEL(m, " 0x%08X "H2C_MSR_FMT" %s\n"
@@ -2942,10 +2942,6 @@ const struct rtw_proc_hdl adapter_proc_hdls[] = {
 
 	RTW_PROC_HDL_SSEQ("dynamic_agg_enable", proc_get_dynamic_agg_enable, proc_set_dynamic_agg_enable),
 	RTW_PROC_HDL_SSEQ("iqk_fw_offload", proc_get_iqk_fw_offload, proc_set_iqk_fw_offload),
-
-#ifdef CONFIG_LED_CONTROL
-  RTW_PROC_HDL_SSEQ("led_enable", proc_get_led_enable, proc_set_led_enable),
-#endif //CONFIG_LED_CONTROL
 
 };
 

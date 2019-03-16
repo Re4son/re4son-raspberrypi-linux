@@ -242,6 +242,22 @@ static int queue_setup(struct vb2_queue *vq,
 		return -EINVAL;
 	}
 
+	/* Handle CREATE_BUFS situation - *nplanes != 0 */
+	if (*nplanes) {
+		if (*nplanes != 1 ||
+		    sizes[0] < dev->capture.port->current_buffer.size) {
+			v4l2_dbg(1, bcm2835_v4l2_debug, &dev->v4l2_dev,
+				 "%s: dev:%p Invalid buffer request from CREATE_BUFS, size %u < %u, nplanes %u != 1\n",
+				 __func__, dev, sizes[0],
+				 dev->capture.port->current_buffer.size,
+				 *nplanes);
+			return -EINVAL;
+		} else {
+			return 0;
+		}
+	}
+
+	/* Handle REQBUFS situation */
 	size = dev->capture.port->current_buffer.size;
 	if (size == 0) {
 		v4l2_err(&dev->v4l2_dev,
@@ -427,6 +443,7 @@ static void buffer_cb(struct vchiq_mmal_instance *instance,
 	}
 	dev->capture.last_timestamp = buf->vb.vb2_buf.timestamp;
 	buf->vb.sequence = dev->capture.sequence++;
+	buf->vb.field = V4L2_FIELD_NONE;
 
 	vb2_set_plane_payload(&buf->vb.vb2_buf, 0, mmal_buf->length);
 	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME)

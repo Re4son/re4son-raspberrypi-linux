@@ -248,7 +248,28 @@ arm_copy_to_user(void __user *to, const void *from, unsigned long n)
 		n = __copy_to_user_std(to, from, n);
 		uaccess_restore(ua_flags);
 	} else {
-		n = __copy_to_user_memcpy(to, from, n);
+		n = __copy_to_user_memcpy(uaccess_mask_range_ptr(to, n),
+					  from, n);
+	}
+	return n;
+}
+
+unsigned long __must_check
+arm_copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+	/*
+	 * This test is stubbed out of the main function above to keep
+	 * the overhead for small copies low by avoiding a large
+	 * register dump on the stack just to reload them right away.
+	 * With frame pointer disabled, tail call optimization kicks in
+	 * as well making this test almost invisible.
+	 */
+	if (n < COPY_TO_USER_THRESHOLD) {
+		unsigned long ua_flags = uaccess_save_and_enable();
+		n = __copy_from_user_std(to, from, n);
+		uaccess_restore(ua_flags);
+	} else {
+		n = __copy_from_user_memcpy(to, from, n);
 	}
 	return n;
 }

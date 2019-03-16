@@ -97,6 +97,7 @@ struct vchiq_mmal_component {
 	struct vchiq_mmal_port input[MAX_PORT_COUNT]; /* input ports */
 	struct vchiq_mmal_port output[MAX_PORT_COUNT]; /* output ports */
 	struct vchiq_mmal_port clock[MAX_PORT_COUNT]; /* clock ports */
+	u32 client_component;	/* Used to ref back to client struct */
 };
 
 int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance);
@@ -165,6 +166,8 @@ int vchiq_mmal_version(struct vchiq_mmal_instance *instance,
 int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
 			     struct vchiq_mmal_port *port,
 			     struct mmal_buffer *buf);
+
+int mmal_vchi_buffer_unmap(struct mmal_buffer *buf);
 
 int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
 			  struct mmal_buffer *buf);

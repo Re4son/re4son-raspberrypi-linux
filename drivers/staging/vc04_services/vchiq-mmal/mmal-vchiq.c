@@ -472,9 +472,9 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
 static void event_to_host_cb(struct vchiq_mmal_instance *instance,
 			     struct mmal_msg *msg, u32 msg_len)
 {
-	/* FIXME: Not going to work on 64 bit */
+	int comp_idx = msg->u.event_to_host.client_component;
 	struct vchiq_mmal_component *component =
-		(struct vchiq_mmal_component *)msg->u.event_to_host.client_component;
+					&instance->component[comp_idx];
 	struct vchiq_mmal_port *port = NULL;
 	struct mmal_msg_context *msg_context;
 	u32 port_num = msg->u.event_to_host.port_num;
@@ -1073,7 +1073,7 @@ static int create_component(struct vchiq_mmal_instance *instance,
 
 	/* build component create message */
 	m.h.type = MMAL_MSG_TYPE_COMPONENT_CREATE;
-	m.u.component_create.client_component = (u32)(unsigned long)component;
+	m.u.component_create.client_component = component->client_component;
 	strncpy(m.u.component_create.name, name,
 		sizeof(m.u.component_create.name));
 
@@ -1400,7 +1400,8 @@ static int port_parameter_get(struct vchiq_mmal_instance *instance,
 		goto release_msg;
 	}
 
-	ret = -rmsg->u.port_parameter_get_reply.status;
+	ret = rmsg->u.port_parameter_get_reply.status;
+
 	/* port_parameter_get_reply.size includes the header,
 	 * whilst *value_size doesn't.
 	 */
@@ -1412,11 +1413,12 @@ static int port_parameter_get(struct vchiq_mmal_instance *instance,
 		 */
 		memcpy(value, &rmsg->u.port_parameter_get_reply.value,
 		       *value_size);
-		*value_size = rmsg->u.port_parameter_get_reply.size;
 	} else {
 		memcpy(value, &rmsg->u.port_parameter_get_reply.value,
 		       rmsg->u.port_parameter_get_reply.size);
 	}
+	/* Always report the size of the returned parameter to the caller */
+	*value_size = rmsg->u.port_parameter_get_reply.size;
 
 	pr_debug("%s:result:%d component:0x%x port:%d parameter:%d\n", __func__,
 		 ret, port->component->handle, port->handle, parameter_id);
@@ -1782,6 +1784,24 @@ int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
 }
 EXPORT_SYMBOL_GPL(mmal_vchi_buffer_init);
 
+int mmal_vchi_buffer_unmap(struct mmal_buffer *buf)
+{
+	int ret = 0;
+
+	if (buf->vcsm_handle) {
+		int ret;
+
+		pr_debug("%s: vc_sm_cma_free on handle %p\n", __func__,
+			 buf->vcsm_handle);
+		ret = vc_sm_cma_free(buf->vcsm_handle);
+		if (ret)
+			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
+		buf->vcsm_handle = 0;
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mmal_vchi_buffer_unmap);
+
 int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
 {
 	struct mmal_msg_context *msg_context = buf->msg_context;
@@ -1790,16 +1810,7 @@ int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
 		release_msg_context(msg_context);
 	buf->msg_context = NULL;
 
-	if (buf->vcsm_handle) {
-		int ret;
-
-		pr_debug("%s: vc_sm_cma_free on handle %08X\n", __func__,
-			 buf->vcsm_handle);
-		ret = vc_sm_cma_free(buf->vcsm_handle);
-		if (ret)
-			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
-		buf->vcsm_handle = 0;
-	}
+	mmal_vchi_buffer_unmap(buf);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mmal_vchi_buffer_cleanup);
@@ -1867,6 +1878,12 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
 		ret = -EINVAL;	/* todo is this correct error? */
 		goto unlock;
 	}
+
+	/* We need a handle to reference back to our component structure.
+	 * Use the array index in instance->component rather than rolling
+	 * another IDR.
+	 */
+	component->client_component = idx;
 
 	ret = create_component(instance, component, name);
 	if (ret < 0) {

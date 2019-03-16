@@ -25,7 +25,6 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/of_device.h>
@@ -72,8 +71,10 @@ struct sm_pde_t {
 struct sm_state_t {
 	struct platform_device *pdev;
 
-	struct miscdevice dev;
 	struct sm_instance *sm_handle;	/* Handle for videocore service. */
+
+	spinlock_t kernelid_map_lock;	/* Spinlock protecting kernelid_map */
+	struct idr kernelid_map;
 
 	struct mutex map_lock;          /* Global map lock. */
 	struct list_head buffer_list;	/* List of buffer. */
@@ -96,6 +97,29 @@ static int sm_inited;
 /* ---- Private Function Prototypes -------------------------------------- */
 
 /* ---- Private Functions ------------------------------------------------ */
+
+static int get_kernel_id(struct vc_sm_buffer *buffer)
+{
+	int handle;
+
+	spin_lock(&sm_state->kernelid_map_lock);
+	handle = idr_alloc(&sm_state->kernelid_map, buffer, 0, 0, GFP_KERNEL);
+	spin_unlock(&sm_state->kernelid_map_lock);
+
+	return handle;
+}
+
+static struct vc_sm_buffer *lookup_kernel_id(int handle)
+{
+	return idr_find(&sm_state->kernelid_map, handle);
+}
+
+static void free_kernel_id(int handle)
+{
+	spin_lock(&sm_state->kernelid_map_lock);
+	idr_remove(&sm_state->kernelid_map, handle);
+	spin_unlock(&sm_state->kernelid_map_lock);
+}
 
 static int vc_sm_cma_seq_file_show(struct seq_file *s, void *v)
 {
@@ -129,8 +153,7 @@ static int vc_sm_cma_global_state_show(struct seq_file *s, void *v)
 	if (!sm_state)
 		return 0;
 
-	seq_printf(s, "\nVC-ServiceHandle     0x%x\n",
-		   (unsigned int)sm_state->sm_handle);
+	seq_printf(s, "\nVC-ServiceHandle     %p\n", sm_state->sm_handle);
 
 	/* Log all applicable mapping(s). */
 
@@ -145,7 +168,7 @@ static int vc_sm_cma_global_state_show(struct seq_file *s, void *v)
 				   resource);
 			seq_printf(s, "           NAME         %s\n",
 				   resource->name);
-			seq_printf(s, "           SIZE         %d\n",
+			seq_printf(s, "           SIZE         %zu\n",
 				   resource->size);
 			seq_printf(s, "           DMABUF       %p\n",
 				   resource->dma_buf);
@@ -181,7 +204,7 @@ static void vc_sm_add_resource(struct vc_sm_privdata_t *privdata,
 	list_add(&buffer->global_buffer_list, &sm_state->buffer_list);
 	mutex_unlock(&sm_state->map_lock);
 
-	pr_debug("[%s]: added buffer %p (name %s, size %d)\n",
+	pr_debug("[%s]: added buffer %p (name %s, size %zu)\n",
 		 __func__, buffer, buffer->name, buffer->size);
 }
 
@@ -194,7 +217,7 @@ static void vc_sm_release_resource(struct vc_sm_buffer *buffer, int force)
 	mutex_lock(&sm_state->map_lock);
 	mutex_lock(&buffer->lock);
 
-	pr_debug("[%s]: buffer %p (name %s, size %d)\n",
+	pr_debug("[%s]: buffer %p (name %s, size %zu)\n",
 		 __func__, buffer, buffer->name, buffer->size);
 
 	if (buffer->vc_handle && buffer->vpu_state == VPU_MAPPED) {
@@ -443,6 +466,7 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	struct vc_sm_import_result result = { };
 	struct dma_buf_attachment *attach = NULL;
 	struct sg_table *sgt = NULL;
+	dma_addr_t dma_addr;
 	int ret = 0;
 	int status;
 
@@ -478,21 +502,22 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	}
 
 	import.type = VC_SM_ALLOC_NON_CACHED;
-	import.addr = (uint32_t)sg_dma_address(sgt->sgl);
+	dma_addr = sg_dma_address(sgt->sgl);
+	import.addr = (uint32_t)dma_addr;
 	if ((import.addr & 0xC0000000) != 0xC0000000) {
-		pr_err("%s: Expecting an uncached alias for dma_addr %08x\n",
-		       __func__, import.addr);
+		pr_err("%s: Expecting an uncached alias for dma_addr %pad\n",
+		       __func__, &dma_addr);
 		import.addr |= 0xC0000000;
 	}
 	import.size = sg_dma_len(sgt->sgl);
 	import.allocator = current->tgid;
-	import.kernel_id = (uint32_t)buffer;	//FIXME: 64 bit support needed.
+	import.kernel_id = get_kernel_id(buffer);
 
 	memcpy(import.name, VC_SM_RESOURCE_NAME_DEFAULT,
 	       sizeof(VC_SM_RESOURCE_NAME_DEFAULT));
 
-	pr_debug("[%s]: attempt to import \"%s\" data - type %u, addr %p, size %u\n",
-		 __func__, import.name, import.type, (void *)import.addr,
+	pr_debug("[%s]: attempt to import \"%s\" data - type %u, addr %pad, size %u\n",
+		 __func__, import.name, import.type, &dma_addr,
 		 import.size);
 
 	/* Allocate the videocore buffer. */
@@ -527,7 +552,7 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 
 	buffer->attach = attach;
 	buffer->sgt = sgt;
-	buffer->dma_addr = sg_dma_address(sgt->sgl);
+	buffer->dma_addr = dma_addr;
 	buffer->in_use = 1;
 
 	/*
@@ -559,6 +584,7 @@ error:
 		vc_sm_cma_vchi_free(sm_state->sm_handle, &free,
 				    &sm_state->int_trans_id);
 	}
+	free_kernel_id(import.kernel_id);
 	kfree(buffer);
 	if (sgt)
 		dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
@@ -586,7 +612,7 @@ vc_sm_vpu_event(struct sm_instance *instance, struct vc_sm_result_t *reply,
 	{
 		struct vc_sm_released *release = (struct vc_sm_released *)reply;
 		struct vc_sm_buffer *buffer =
-				(struct vc_sm_buffer *)release->kernel_id;
+					lookup_kernel_id(release->kernel_id);
 
 		/*
 		 * FIXME: Need to check buffer is still valid and allocated
@@ -599,6 +625,7 @@ vc_sm_vpu_event(struct sm_instance *instance, struct vc_sm_result_t *reply,
 		buffer->vc_handle = 0;
 		buffer->vpu_state = VPU_NOT_MAPPED;
 		mutex_unlock(&buffer->lock);
+		free_kernel_id(release->kernel_id);
 
 		vc_sm_release_resource(buffer, 0);
 	}
@@ -703,9 +730,6 @@ err_free_mem:
 /* Driver loading. */
 static int bcm2835_vc_sm_cma_probe(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-	int err;
-
 	pr_info("%s: Videocore shared memory driver\n", __func__);
 
 	sm_state = kzalloc(sizeof(*sm_state), GFP_KERNEL);
@@ -714,13 +738,14 @@ static int bcm2835_vc_sm_cma_probe(struct platform_device *pdev)
 	sm_state->pdev = pdev;
 	mutex_init(&sm_state->map_lock);
 
-	dev->coherent_dma_mask = DMA_BIT_MASK(32);
-	dev->dma_mask = &dev->coherent_dma_mask;
-	err = of_dma_configure(dev, NULL, true);
-	if (err) {
-		dev_err(dev, "Unable to setup DMA: %d\n", err);
-		return err;
-	}
+	spin_lock_init(&sm_state->kernelid_map_lock);
+	idr_init_base(&sm_state->kernelid_map, 1);
+
+	pdev->dev.dma_parms = devm_kzalloc(&pdev->dev,
+					   sizeof(*pdev->dev.dma_parms),
+					   GFP_KERNEL);
+	/* dma_set_max_seg_size checks if dma_parms is NULL. */
+	dma_set_max_seg_size(&pdev->dev, 0x3FFFFFFF);
 
 	vchiq_add_connected_callback(vc_sm_connected_init);
 	return 0;
@@ -731,14 +756,13 @@ static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
 {
 	pr_debug("[%s]: start\n", __func__);
 	if (sm_inited) {
-		/* Remove shared memory device. */
-		misc_deregister(&sm_state->dev);
-
 		/* Remove all proc entries. */
 		//debugfs_remove_recursive(sm_state->dir_root);
 
 		/* Stop the videocore shared memory service. */
 		vc_sm_cma_vchi_stop(&sm_state->sm_handle);
+
+		idr_destroy(&sm_state->kernelid_map);
 
 		/* Free the memory for the state structure. */
 		mutex_destroy(&sm_state->map_lock);
@@ -750,7 +774,7 @@ static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
 }
 
 /* Get an internal resource handle mapped from the external one. */
-int vc_sm_cma_int_handle(int handle)
+int vc_sm_cma_int_handle(void *handle)
 {
 	struct dma_buf *dma_buf = (struct dma_buf *)handle;
 	struct vc_sm_buffer *res;
@@ -767,7 +791,7 @@ int vc_sm_cma_int_handle(int handle)
 EXPORT_SYMBOL_GPL(vc_sm_cma_int_handle);
 
 /* Free a previously allocated shared memory handle and block. */
-int vc_sm_cma_free(int handle)
+int vc_sm_cma_free(void *handle)
 {
 	struct dma_buf *dma_buf = (struct dma_buf *)handle;
 
@@ -777,7 +801,7 @@ int vc_sm_cma_free(int handle)
 		return -EPERM;
 	}
 
-	pr_debug("%s: handle %08x/dmabuf %p\n", __func__, handle, dma_buf);
+	pr_debug("%s: handle %p/dmabuf %p\n", __func__, handle, dma_buf);
 
 	dma_buf_put(dma_buf);
 
@@ -786,7 +810,7 @@ int vc_sm_cma_free(int handle)
 EXPORT_SYMBOL_GPL(vc_sm_cma_free);
 
 /* Import a dmabuf to be shared with VC. */
-int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, int *handle)
+int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, void **handle)
 {
 	struct dma_buf *new_dma_buf;
 	struct vc_sm_buffer *res;
@@ -806,7 +830,7 @@ int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, int *handle)
 		res = (struct vc_sm_buffer *)new_dma_buf->priv;
 
 		/* Assign valid handle at this time.*/
-		*handle = (int)new_dma_buf;
+		*handle = new_dma_buf;
 	} else {
 		/*
 		 * succeeded in importing the dma_buf, but then

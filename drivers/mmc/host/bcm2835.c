@@ -286,6 +286,7 @@ static void bcm2835_reset(struct mmc_host *mmc)
 
 	if (host->dma_chan)
 		dmaengine_terminate_sync(host->dma_chan);
+	host->dma_chan = NULL;
 	bcm2835_reset_internal(host);
 }
 
@@ -845,6 +846,8 @@ static void bcm2835_timeout(struct work_struct *work)
 	if (host->mrq) {
 		dev_err(dev, "timeout waiting for hardware interrupt.\n");
 		bcm2835_dumpregs(host);
+
+		bcm2835_reset(host->mmc);
 
 		if (host->data) {
 			host->data->error = -ETIMEDOUT;
@@ -1436,6 +1439,8 @@ static int bcm2835_probe(struct platform_device *pdev)
 
 err:
 	dev_dbg(dev, "%s -> err %d\n", __func__, ret);
+	if (host->dma_chan_rxtx)
+		dma_release_channel(host->dma_chan_rxtx);
 	mmc_free_host(mmc);
 
 	return ret;

@@ -20,6 +20,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	audioinjector-addons.dtbo \
 	audioinjector-ultra.dtbo \
 	audioinjector-wm8731-audio.dtbo \
+	audiosense-pi.dtbo \
 	audremap.dtbo \
 	balena-fin.dtbo \
 	bmp085_i2c-sensor.dtbo \
@@ -48,6 +49,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	hifiberry-amp.dtbo \
 	hifiberry-dac.dtbo \
 	hifiberry-dacplus.dtbo \
+	hifiberry-dacplusadc.dtbo \
 	hifiberry-digi.dtbo \
 	hifiberry-digi-pro.dtbo \
 	hy28a.dtbo \
@@ -77,6 +79,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	mcp2515-can1.dtbo \
 	mcp3008.dtbo \
 	mcp3202.dtbo \
+	mcp342x.dtbo \
 	media-center.dtbo \
 	midi-uart0.dtbo \
 	midi-uart1.dtbo \
@@ -95,9 +98,6 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	pisound.dtbo \
 	pitft22.dtbo \
 	pitft28-capacitive.dtbo \
-	pitft28c.dtbo \
-	pitft28r.dtbo \
-	pitft35r.dtbo \
 	pitft28-resistive.dtbo \
 	pitft35-resistive.dtbo \
 	pps-gpio.dtbo \
@@ -136,6 +136,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	spi2-1cs.dtbo \
 	spi2-2cs.dtbo \
 	spi2-3cs.dtbo \
+	ssd1306.dtbo \
 	superaudioboard.dtbo \
 	sx150x.dtbo \
 	tc358743.dtbo \

@@ -147,7 +147,8 @@ vc4_atomic_complete_commit(struct drm_atomic_state *state)
 
 	drm_atomic_helper_commit_modeset_disables(dev, state);
 
-	vc4_ctm_commit(vc4, state);
+	if (!vc4->firmware_kms)
+		vc4_ctm_commit(vc4, state);
 
 	drm_atomic_helper_commit_planes(dev, state, 0);
 
@@ -221,7 +222,8 @@ static int vc4_atomic_commit(struct drm_device *dev,
 	 * drm_atomic_helper_setup_commit() from auto-completing
 	 * commit->flip_done.
 	 */
-	state->legacy_cursor_update = false;
+	if (!vc4->firmware_kms)
+		state->legacy_cursor_update = false;
 	ret = drm_atomic_helper_setup_commit(state, nonblock);
 	if (ret)
 		return ret;

@@ -301,7 +301,7 @@ static int notrace fiq_iso_out_advance(struct fiq_state *st, int num_channels, i
 		last = 1;
 
 	/* New DMA address - address of bounce buffer referred to in index */
-	hcdma.d32 = (uint32_t) &blob->channel[n].index[i].buf[0];
+	hcdma.d32 = (dma_addr_t) blob->channel[n].index[i].buf;
 	//hcdma.d32 = FIQ_READ(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA);
 	//hcdma.d32 += st->channel[n].dma_info.slot_len[i];
 	fiq_print(FIQDBG_INT, st, "LAST: %01d ", last);
@@ -1347,7 +1347,7 @@ void notrace dwc_otg_fiq_fsm(struct fiq_state *state, int num_channels)
 	/* We got an interrupt, didn't handle it. */
 	if (kick_irq) {
 		state->mphi_int_count++;
-		FIQ_WRITE(state->mphi_regs.outdda, (int) state->dummy_send);
+		FIQ_WRITE(state->mphi_regs.outdda, state->dummy_send_dma);
 		FIQ_WRITE(state->mphi_regs.outddb, (1<<29));
 
 	}
@@ -1408,7 +1408,7 @@ void notrace dwc_otg_fiq_nop(struct fiq_state *state)
 		FIQ_WRITE(state->dwc_regs_base + GINTMSK, gintmsk.d32);
 		/* Force a clear before another dummy send */
 		FIQ_WRITE(state->mphi_regs.intstat, (1<<29));
-		FIQ_WRITE(state->mphi_regs.outdda, (int) state->dummy_send);
+		FIQ_WRITE(state->mphi_regs.outdda, state->dummy_send_dma);
 		FIQ_WRITE(state->mphi_regs.outddb, (1<<29));
 
 	}

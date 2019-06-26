@@ -3,7 +3,7 @@
 /plugin/;
 
 / {
-	compatible = "brcm,bcm2708", "brcm,bcm2709";
+	compatible = "brcm,bcm2835";
 
 	fragment@0 {
 		target = <&i2c1>;
@@ -38,7 +38,7 @@
 			};
 
 			hts221-humid@5f {
-				compatible = "st,hts221-humid";
+				compatible = "st,hts221-humid", "st,hts221";
 				reg = <0x5f>;
 				status = "okay";
 			};

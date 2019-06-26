@@ -173,6 +173,19 @@ static struct platform_device *bcm2835_camera;
 static struct platform_device *bcm2835_codec;
 static struct platform_device *vcsm_cma;
 
+static struct vchiq_drvdata bcm2835_drvdata = {
+	.cache_line_size = 32,
+};
+
+static struct vchiq_drvdata bcm2836_drvdata = {
+	.cache_line_size = 64,
+};
+
+static struct vchiq_drvdata bcm2838_drvdata = {
+	.cache_line_size = 64,
+	.use_36bit_addrs = true,
+};
+
 static const char *const ioctl_names[] = {
 	"CONNECT",
 	"SHUTDOWN",
@@ -3586,6 +3599,7 @@ vchiq_register_child(struct platform_device *pdev, const char *name)
 {
 	struct platform_device_info pdevinfo;
 	struct platform_device *new_dev;
+	struct device_node *np;
 
 	memset(&pdevinfo, 0, sizeof(pdevinfo));
 
@@ -3599,19 +3613,43 @@ vchiq_register_child(struct platform_device *pdev, const char *name)
 		return NULL;
 
 	/*
-	 * We want the dma-ranges etc to be copied from the parent VCHIQ device
-	 * to be passed on to the children too.
+	 * We want the dma-ranges etc to be copied from a device with the
+	 * correct dma-ranges for the VPU.
+	 * VCHIQ on Pi4 is now under scb which doesn't get those dma-ranges.
+	 * Take the "dma" node as going to be suitable as it sees the world
+	 * through the same eyes as the VPU.
 	 */
-	of_dma_configure(&new_dev->dev, pdev->dev.of_node, true);
+	np = of_find_node_by_path("dma");
+	if (!np)
+		np = pdev->dev.of_node;
+
+	of_dma_configure(&new_dev->dev, np, true);
+
+	if (np != pdev->dev.of_node)
+		of_node_put(np);
 
 	return new_dev;
 }
 
+static const struct of_device_id vchiq_of_match[] = {
+	{ .compatible = "brcm,bcm2835-vchiq", .data = &bcm2835_drvdata },
+	{ .compatible = "brcm,bcm2836-vchiq", .data = &bcm2836_drvdata },
+	{ .compatible = "brcm,bcm2838-vchiq", .data = &bcm2838_drvdata },
+	{},
+};
+MODULE_DEVICE_TABLE(of, vchiq_of_match);
+
 static int vchiq_probe(struct platform_device *pdev)
 {
 	struct device_node *fw_node;
-	struct rpi_firmware *fw;
+	const struct of_device_id *of_id;
+	struct vchiq_drvdata *drvdata;
 	int err;
+
+	of_id = of_match_node(vchiq_of_match, pdev->dev.of_node);
+	drvdata = (struct vchiq_drvdata *)of_id->data;
+	if (!drvdata)
+		return -EINVAL;
 
 	fw_node = of_find_compatible_node(NULL, NULL,
 					  "raspberrypi,bcm2835-firmware");
@@ -3620,12 +3658,12 @@ static int vchiq_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	fw = rpi_firmware_get(fw_node);
+	drvdata->fw = rpi_firmware_get(fw_node);
 	of_node_put(fw_node);
-	if (!fw)
+	if (!drvdata->fw)
 		return -EPROBE_DEFER;
 
-	platform_set_drvdata(pdev, fw);
+	platform_set_drvdata(pdev, drvdata);
 
 	err = vchiq_platform_init(pdev, &g_state);
 	if (err != 0)
@@ -3702,12 +3740,6 @@ static int vchiq_remove(struct platform_device *pdev)
 
 	return 0;
 }
-
-static const struct of_device_id vchiq_of_match[] = {
-	{ .compatible = "brcm,bcm2835-vchiq", },
-	{},
-};
-MODULE_DEVICE_TABLE(of, vchiq_of_match);
 
 static struct platform_driver vchiq_driver = {
 	.driver = {

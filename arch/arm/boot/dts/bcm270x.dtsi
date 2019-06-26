@@ -3,18 +3,18 @@
 
 / {
 	chosen {
-		bootargs = "";
+		bootargs = "coherent_pool=1M";
 		/delete-property/ stdout-path;
 	};
 
 	soc: soc {
 
 		watchdog: watchdog@7e100000 {
-			/* Add alias */
+			/* Add label */
 		};
 
 		random: rng@7e104000 {
-			/* Add alias */
+			/* Add label */
 		};
 
 		gpio@7e200000 { /* gpio */
@@ -40,18 +40,18 @@
 		};
 
 		spi0: spi@7e204000 {
-			/* Add alias */
+			/* Add label */
 			dmas = <&dma 6>, <&dma 7>;
 			dma-names = "tx", "rx";
 		};
 
 		pixelvalve0: pixelvalve@7e206000 {
-			/* Add alias */
+			/* Add label */
 			status = "disabled";
 		};
 
 		pixelvalve1: pixelvalve@7e207000 {
-			/* Add alias */
+			/* Add label */
 			status = "disabled";
 		};
 
@@ -68,7 +68,7 @@
 
 		/delete-node/ sdhci@7e300000;
 
-		mmc: mmc@7e300000 {
+		sdhci: mmc: mmc@7e300000 {
 			compatible = "brcm,bcm2835-mmc", "brcm,bcm2835-sdhci";
 			reg = <0x7e300000 0x100>;
 			interrupts = <2 30>;
@@ -79,8 +79,21 @@
 			status = "disabled";
 		};
 
+		/* A clone of mmc but with non-removable set */
+		mmcnr: mmcnr@7e300000 {
+			compatible = "brcm,bcm2835-mmc", "brcm,bcm2835-sdhci";
+			reg = <0x7e300000 0x100>;
+			interrupts = <2 30>;
+			clocks = <&clocks BCM2835_CLOCK_EMMC>;
+			dmas = <&dma 11>;
+			dma-names = "rx-tx";
+			brcm,overclock-50 = <0>;
+			non-removable;
+			status = "disabled";
+		};
+
 		hvs: hvs@7e400000 {
-			/* Add alias */
+			/* Add label */
 			status = "disabled";
 		};
 
@@ -106,7 +119,7 @@
 		};
 
 		pixelvalve2: pixelvalve@7e807000 {
-			/* Add alias */
+			/* Add label */
 			status = "disabled";
 		};
 
@@ -118,8 +131,10 @@
 			compatible = "brcm,bcm2708-usb";
 			reg = <0x7e980000 0x10000>,
 			      <0x7e006000 0x1000>;
-			interrupts = <2 0>,
-				     <1 9>;
+			interrupt-names = "usb",
+					  "soft";
+			interrupts = <1 9>,
+				     <2 0>;
 		};
 
 		v3d@7ec00000 { /* vd3 */
@@ -135,22 +150,6 @@
 			firmware = <&firmware>;
 			status = "disabled";
 		};
-	};
-
-	vdd_5v0_reg: fixedregulator_5v0 {
-		compatible = "regulator-fixed";
-		regulator-name = "5v0";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		regulator-always-on;
-	};
-
-	vdd_3v3_reg: fixedregulator_3v3 {
-		compatible = "regulator-fixed";
-		regulator-name = "3v3";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-always-on;
 	};
 
 	__overrides__ {

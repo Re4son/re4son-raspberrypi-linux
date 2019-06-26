@@ -17,12 +17,6 @@ config SND_SOC_CYGNUS
 
 	  If you don't know what to do here, say N.
 
-config SND_BCM2708_SOC_3DLAB_NANO_PLAYER
-	tristate "Support for 3Dlab Nano Player"
-	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
-	help
-	  Say Y or M if you want to add support for 3Dlab Nano Player.
-
 config SND_BCM2708_SOC_GOOGLEVOICEHAT_SOUNDCARD
 	tristate "Support for Google voiceHAT soundcard"
 	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
@@ -108,6 +102,13 @@ config SND_BCM2708_SOC_JUSTBOOM_DIGI
 	help
 	  Say Y or M if you want to add support for JustBoom Digi.
 
+config SND_BCM2708_SOC_IQAUDIO_CODEC
+	tristate "Support for IQaudIO-CODEC"
+	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+	select SND_SOC_DA7213
+	help
+	  Say Y or M if you want to add support for IQaudIO-CODEC.
+
 config SND_BCM2708_SOC_IQAUDIO_DAC
 	tristate "Support for IQaudIO-DAC"
 	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
@@ -122,6 +123,13 @@ config SND_BCM2708_SOC_IQAUDIO_DIGI
 	select SND_RPI_WM8804_SOUNDCARD
 	help
 	  Say Y or M if you want to add support for IQAudIO Digital IO board.
+
+config SND_BCM2708_SOC_I_SABRE_Q2M
+        tristate "Support for Audiophonics I-Sabre Q2M DAC"
+        depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+        select SND_SOC_I_SABRE_CODEC
+        help
+        Say Y or M if you want to add support for Audiophonics I-SABRE Q2M DAC
 
 config SND_BCM2708_SOC_ADAU1977_ADC
 	tristate "Support for ADAU1977 ADC"

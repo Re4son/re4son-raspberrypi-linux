@@ -176,6 +176,7 @@ struct mmal_msg_context {
 };
 
 struct vchiq_mmal_instance {
+	VCHI_INSTANCE_T vchi_instance;
 	VCHI_SERVICE_HANDLE_T handle;
 
 	/* ensure serialised access to service */
@@ -185,7 +186,8 @@ struct vchiq_mmal_instance {
 	void *bulk_scratch;
 
 	struct idr context_map;
-	spinlock_t context_map_lock;
+	/* protect accesses to context_map */
+	struct mutex context_map_lock;
 
 	struct vchiq_mmal_component component[VCHIQ_MMAL_MAX_COMPONENTS];
 
@@ -209,10 +211,10 @@ get_msg_context(struct vchiq_mmal_instance *instance)
 	 * that when we service the VCHI reply, we can look up what
 	 * message is being replied to.
 	 */
-	spin_lock(&instance->context_map_lock);
+	mutex_lock(&instance->context_map_lock);
 	handle = idr_alloc(&instance->context_map, msg_context,
 			   0, 0, GFP_KERNEL);
-	spin_unlock(&instance->context_map_lock);
+	mutex_unlock(&instance->context_map_lock);
 
 	if (handle < 0) {
 		kfree(msg_context);
@@ -236,9 +238,9 @@ release_msg_context(struct mmal_msg_context *msg_context)
 {
 	struct vchiq_mmal_instance *instance = msg_context->instance;
 
-	spin_lock(&instance->context_map_lock);
+	mutex_lock(&instance->context_map_lock);
 	idr_remove(&instance->context_map, msg_context->handle);
-	spin_unlock(&instance->context_map_lock);
+	mutex_unlock(&instance->context_map_lock);
 	kfree(msg_context);
 }
 
@@ -1847,9 +1849,26 @@ static void free_event_context(struct vchiq_mmal_port *port)
 {
 	struct mmal_msg_context *ctx = port->event_context;
 
+	if (!ctx)
+		return;
+
 	kfree(ctx->u.bulk.buffer->buffer);
 	kfree(ctx->u.bulk.buffer);
 	release_msg_context(ctx);
+	port->event_context = NULL;
+}
+
+static void release_all_event_contexts(struct vchiq_mmal_component *component)
+{
+	int idx;
+
+	for (idx = 0; idx < component->inputs; idx++)
+		free_event_context(&component->input[idx]);
+	for (idx = 0; idx < component->outputs; idx++)
+		free_event_context(&component->output[idx]);
+	for (idx = 0; idx < component->clocks; idx++)
+		free_event_context(&component->clock[idx]);
+	free_event_context(&component->control);
 }
 
 /* Initialise a mmal component and its ports
@@ -1947,6 +1966,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
 
 release_component:
 	destroy_component(instance, component);
+	release_all_event_contexts(component);
 unlock:
 	if (component)
 		component->in_use = 0;
@@ -1974,12 +1994,7 @@ int vchiq_mmal_component_finalise(struct vchiq_mmal_instance *instance,
 
 	component->in_use = 0;
 
-	for (idx = 0; idx < component->inputs; idx++)
-		free_event_context(&component->input[idx]);
-	for (idx = 0; idx < component->outputs; idx++)
-		free_event_context(&component->output[idx]);
-	for (idx = 0; idx < component->clocks; idx++)
-		free_event_context(&component->clock[idx]);
+	release_all_event_contexts(component);
 
 	mutex_unlock(&instance->vchiq_mutex);
 
@@ -2080,6 +2095,8 @@ int vchiq_mmal_finalise(struct vchiq_mmal_instance *instance)
 
 	idr_destroy(&instance->context_map);
 
+	vchi_disconnect(instance->vchi_instance);
+
 	kfree(instance);
 
 	return status;
@@ -2091,7 +2108,7 @@ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
 	int status;
 	struct vchiq_mmal_instance *instance;
 	static VCHI_CONNECTION_T *vchi_connection;
-	static VCHI_INSTANCE_T vchi_instance;
+	VCHI_INSTANCE_T vchi_instance;
 	SERVICE_CREATION_T params = {
 		.version		= VCHI_VERSION_EX(VC_MMAL_VER, VC_MMAL_MIN_VER),
 		.service_id		= VC_MMAL_SERVER_NAME,
@@ -2137,11 +2154,13 @@ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
 	if (!instance)
 		return -ENOMEM;
 
+	instance->vchi_instance = vchi_instance;
+
 	mutex_init(&instance->vchiq_mutex);
 
 	instance->bulk_scratch = vmalloc(PAGE_SIZE);
 
-	spin_lock_init(&instance->context_map_lock);
+	mutex_init(&instance->context_map_lock);
 	idr_init_base(&instance->context_map, 1);
 
 	params.callback_param = instance;

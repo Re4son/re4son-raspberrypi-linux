@@ -361,11 +361,9 @@ int vc_vchi_sm_stop(struct sm_instance **handle)
 
 	/* Close all VCHI service connections */
 	for (i = 0; i < instance->num_connections; i++) {
-		int32_t success;
-
 		vchi_service_use(instance->vchi_handle[i]);
 
-		success = vchi_service_close(instance->vchi_handle[i]);
+		vchi_service_close(instance->vchi_handle[i]);
 	}
 
 	kfree(instance);
@@ -377,7 +375,7 @@ lock:
 	return -EINVAL;
 }
 
-int vc_vchi_sm_send_msg(struct sm_instance *handle,
+static int vc_vchi_sm_send_msg(struct sm_instance *handle,
 			enum vc_sm_msg_type msg_id,
 			void *msg, uint32_t msg_size,
 			void *result, uint32_t result_size,

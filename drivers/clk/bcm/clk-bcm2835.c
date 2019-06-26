@@ -124,6 +124,8 @@
 #define CM_AVEODIV		0x1bc
 #define CM_EMMCCTL		0x1c0
 #define CM_EMMCDIV		0x1c4
+#define CM_EMMC2CTL		0x1d0
+#define CM_EMMC2DIV		0x1d4
 
 /* General bits for the CM_*CTL regs */
 # define CM_ENABLE			BIT(4)
@@ -627,15 +629,17 @@ static int bcm2835_pll_on(struct clk_hw *hw)
 	spin_unlock(&cprman->regs_lock);
 
 	/* Wait for the PLL to lock. */
-	timeout = ktime_add_ns(ktime_get(), LOCK_TIMEOUT_NS);
-	while (!(cprman_read(cprman, CM_LOCK) & data->lock_mask)) {
-		if (ktime_after(ktime_get(), timeout)) {
-			dev_err(cprman->dev, "%s: couldn't lock PLL\n",
-				clk_hw_get_name(hw));
-			return -ETIMEDOUT;
-		}
+	if (strcmp(data->name, "pllh")) {
+		timeout = ktime_add_ns(ktime_get(), LOCK_TIMEOUT_NS);
+		while (!(cprman_read(cprman, CM_LOCK) & data->lock_mask)) {
+			if (ktime_after(ktime_get(), timeout)) {
+				dev_err(cprman->dev, "%s: couldn't lock PLL\n",
+					clk_hw_get_name(hw));
+				return -ETIMEDOUT;
+			}
 
-		cpu_relax();
+			cpu_relax();
+		}
 	}
 
 	cprman_write(cprman, data->a2w_ctrl_reg,
@@ -1084,8 +1088,10 @@ static int bcm2835_clock_on(struct clk_hw *hw)
 	return 0;
 }
 
-static int bcm2835_clock_set_rate(struct clk_hw *hw,
-				  unsigned long rate, unsigned long parent_rate)
+static int bcm2835_clock_set_rate_and_parent(struct clk_hw *hw,
+					     unsigned long rate,
+					     unsigned long parent_rate,
+					     u8 parent)
 {
 	struct bcm2835_clock *clock = bcm2835_clock_from_hw(hw);
 	struct bcm2835_cprman *cprman = clock->cprman;
@@ -1095,15 +1101,24 @@ static int bcm2835_clock_set_rate(struct clk_hw *hw,
 
 	spin_lock(&cprman->regs_lock);
 
-	/*
-	 * Setting up frac support
-	 *
-	 * In principle it is recommended to stop/start the clock first,
-	 * but as we set CLK_SET_RATE_GATE during registration of the
-	 * clock this requirement should be take care of by the
-	 * clk-framework.
+	ctl = cprman_read(cprman, data->ctl_reg);
+
+	/* If the clock is running, we have to pause clock generation while
+	 * updating the control and div regs.  This is glitchless (no clock
+	 * signals generated faster than the rate) but each reg access is two
+	 * OSC cycles so the clock will slow down for a moment.
 	 */
-	ctl = cprman_read(cprman, data->ctl_reg) & ~CM_FRAC;
+	if (ctl & CM_ENABLE) {
+		cprman_write(cprman, data->ctl_reg, ctl & ~CM_ENABLE);
+		bcm2835_clock_wait_busy(clock);
+	}
+
+	if (parent != 0xff) {
+		ctl &= ~(CM_SRC_MASK << CM_SRC_SHIFT);
+		ctl |= parent << CM_SRC_SHIFT;
+	}
+
+	ctl &= ~CM_FRAC;
 	ctl |= (div & CM_DIV_FRAC_MASK) ? CM_FRAC : 0;
 	cprman_write(cprman, data->ctl_reg, ctl);
 
@@ -1112,6 +1127,12 @@ static int bcm2835_clock_set_rate(struct clk_hw *hw,
 	spin_unlock(&cprman->regs_lock);
 
 	return 0;
+}
+
+static int bcm2835_clock_set_rate(struct clk_hw *hw,
+				  unsigned long rate, unsigned long parent_rate)
+{
+	return bcm2835_clock_set_rate_and_parent(hw, rate, parent_rate, 0xff);
 }
 
 static bool
@@ -1297,6 +1318,7 @@ static const struct clk_ops bcm2835_clock_clk_ops = {
 	.unprepare = bcm2835_clock_off,
 	.recalc_rate = bcm2835_clock_get_rate,
 	.set_rate = bcm2835_clock_set_rate,
+	.set_rate_and_parent = bcm2835_clock_set_rate_and_parent,
 	.determine_rate = bcm2835_clock_determine_rate,
 	.set_parent = bcm2835_clock_set_parent,
 	.get_parent = bcm2835_clock_get_parent,
@@ -1473,7 +1495,6 @@ static struct clk_hw *bcm2835_register_clock(struct bcm2835_cprman *cprman,
 		init.ops = &bcm2835_vpu_clock_clk_ops;
 	} else {
 		init.ops = &bcm2835_clock_clk_ops;
-		init.flags |= CLK_SET_RATE_GATE | CLK_SET_PARENT_GATE;
 
 		/* If the clock wasn't actually enabled at boot, it's not
 		 * critical.
@@ -2028,6 +2049,15 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.frac_bits = 8,
 		.tcnt_mux = 39),
 
+	/* EMMC2 clock (only available for BCM2838) */
+	[BCM2838_CLOCK_EMMC2]	= REGISTER_PER_CLK(
+		.name = "emmc2",
+		.ctl_reg = CM_EMMC2CTL,
+		.div_reg = CM_EMMC2DIV,
+		.int_bits = 4,
+		.frac_bits = 8,
+		.tcnt_mux = 42),
+
 	/* General purpose (GPIO) clocks */
 	[BCM2835_CLOCK_GP0]	= REGISTER_PER_CLK(
 		.name = "gp0",
@@ -2257,8 +2287,12 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 
 	for (i = 0; i < asize; i++) {
 		desc = &clk_desc_array[i];
-		if (desc->clk_register && desc->data)
-			hws[i] = desc->clk_register(cprman, desc->data);
+		if (desc->clk_register && desc->data) {
+			if ((i != BCM2838_CLOCK_EMMC2) ||
+			    of_device_is_compatible(fw_node, "brcm,bcm2838-cprman")) {
+				hws[i] = desc->clk_register(cprman, desc->data);
+			}
+		}
 	}
 
 	ret = bcm2835_mark_sdc_parent_critical(hws[BCM2835_CLOCK_SDRAM]->clk);
@@ -2278,6 +2312,7 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 
 static const struct of_device_id bcm2835_clk_of_match[] = {
 	{ .compatible = "brcm,bcm2835-cprman", },
+	{ .compatible = "brcm,bcm2838-cprman", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, bcm2835_clk_of_match);

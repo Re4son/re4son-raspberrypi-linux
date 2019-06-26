@@ -77,6 +77,7 @@ struct vc4_dev {
 	struct vc4_dsi *dsi1;
 	struct vc4_vec *vec;
 	struct vc4_txp *txp;
+	struct vc4_fkms *fkms;
 
 	struct vc4_hang_state *hang_state;
 
@@ -724,7 +725,6 @@ extern const struct dma_fence_ops vc4_fence_ops;
 
 /* vc4_firmware_kms.c */
 extern struct platform_driver vc4_firmware_kms_driver;
-void vc4_fkms_cancel_page_flip(struct drm_crtc *crtc, struct drm_file *file);
 
 /* vc4_gem.c */
 void vc4_gem_init(struct drm_device *dev);

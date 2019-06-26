@@ -7,9 +7,9 @@
  * This driver supports the Broadcom V3D 3.3 and 4.1 OpenGL ES GPUs.
  * For V3D 2.x support, see the VC4 driver.
  *
- * Currently only single-core rendering using the binner and renderer
- * is supported.  The TFU (texture formatting unit) and V3D 4.x's CSD
- * (compute shader dispatch) are not yet supported.
+ * The V3D GPU includes a tiled render (composed of a bin and render
+ * pipelines), the TFU (texture formatting unit), and the CSD (compute
+ * shader dispatch).
  */
 
 #include <linux/clk.h>
@@ -19,6 +19,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fb_helper.h>
 
@@ -65,7 +66,7 @@ static int v3d_runtime_resume(struct device *dev)
 }
 #endif
 
-static const struct dev_pm_ops v3d_v3d_pm_ops = {
+static const struct dev_pm_ops v3d_pm_ops = {
 	SET_RUNTIME_PM_OPS(v3d_runtime_suspend, v3d_runtime_resume, NULL)
 };
 
@@ -74,7 +75,6 @@ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 {
 	struct v3d_dev *v3d = to_v3d_dev(dev);
 	struct drm_v3d_get_param *args = data;
-	int ret;
 	static const u32 reg_map[] = {
 		[DRM_V3D_PARAM_V3D_UIFCFG] = V3D_HUB_UIFCFG,
 		[DRM_V3D_PARAM_V3D_HUB_IDENT1] = V3D_HUB_IDENT1,
@@ -100,22 +100,27 @@ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 		if (args->value != 0)
 			return -EINVAL;
 
-		ret = pm_runtime_get_sync(v3d->dev);
 		if (args->param >= DRM_V3D_PARAM_V3D_CORE0_IDENT0 &&
 		    args->param <= DRM_V3D_PARAM_V3D_CORE0_IDENT2) {
 			args->value = V3D_CORE_READ(0, offset);
 		} else {
 			args->value = V3D_READ(offset);
 		}
-		pm_runtime_mark_last_busy(v3d->dev);
-		pm_runtime_put_autosuspend(v3d->dev);
 		return 0;
 	}
 
-	/* Any params that aren't just register reads would go here. */
 
-	DRM_DEBUG("Unknown parameter %d\n", args->param);
-	return -EINVAL;
+	switch (args->param) {
+	case DRM_V3D_PARAM_SUPPORTS_TFU:
+		args->value = 1;
+		return 0;
+	case DRM_V3D_PARAM_SUPPORTS_CSD:
+		args->value = v3d_has_csd(v3d);
+		return 0;
+	default:
+		DRM_DEBUG("Unknown parameter %d\n", args->param);
+		return -EINVAL;
+	}
 }
 
 static int
@@ -170,7 +175,8 @@ static const struct file_operations v3d_drm_fops = {
 /* DRM_AUTH is required on SUBMIT_CL for now, while we don't have GMP
  * protection between clients.  Note that render nodes would be be
  * able to submit CLs that could access BOs from clients authenticated
- * with the master node.
+ * with the master node.  The TFU doesn't use the GMP, so it would
+ * need to stay DRM_AUTH until we do buffer size/offset validation.
  */
 static const struct drm_ioctl_desc v3d_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_CL, v3d_submit_cl_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
@@ -179,6 +185,8 @@ static const struct drm_ioctl_desc v3d_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(V3D_MMAP_BO, v3d_mmap_bo_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(V3D_GET_PARAM, v3d_get_param_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(V3D_GET_BO_OFFSET, v3d_get_bo_offset_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_TFU, v3d_submit_tfu_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_CSD, v3d_submit_csd_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
 };
 
 static const struct vm_operations_struct v3d_vm_ops = {
@@ -227,6 +235,7 @@ static struct drm_driver v3d_drm_driver = {
 static const struct of_device_id v3d_of_match[] = {
 	{ .compatible = "brcm,7268-v3d" },
 	{ .compatible = "brcm,7278-v3d" },
+	{ .compatible = "brcm,2711-v3d" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, v3d_of_match);
@@ -258,10 +267,6 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 	v3d->pdev = pdev;
 	drm = &v3d->drm;
 
-	ret = map_regs(v3d, &v3d->bridge_regs, "bridge");
-	if (ret)
-		goto dev_free;
-
 	ret = map_regs(v3d, &v3d->hub_regs, "hub");
 	if (ret)
 		goto dev_free;
@@ -275,6 +280,37 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 		    V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_REV));
 	v3d->cores = V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_NCORES);
 	WARN_ON(v3d->cores > 1); /* multicore not yet implemented */
+
+	v3d->reset = devm_reset_control_get_exclusive(dev, NULL);
+	if (IS_ERR(v3d->reset)) {
+		ret = PTR_ERR(v3d->reset);
+
+		if (ret == -EPROBE_DEFER)
+			goto dev_free;
+
+		v3d->reset = NULL;
+		ret = map_regs(v3d, &v3d->bridge_regs, "bridge");
+		if (ret) {
+			dev_err(dev,
+				"Failed to get reset control or bridge regs\n");
+			goto dev_free;
+		}
+	}
+
+	v3d->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(v3d->clk)) {
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "Failed to get clock\n");
+		goto dev_free;
+	}
+	v3d->clk_up_rate = clk_get_rate(v3d->clk);
+	/* For downclocking, drop it to the minimum frequency we can get from
+	 * the CPRMAN clock generator dividing off our parent.  The divider is
+	 * 4 bits, but ask for just higher than that so that rounding doesn't
+	 * make cprman reject our rate.
+	 */
+	v3d->clk_down_rate =
+		(clk_get_rate(clk_get_parent(v3d->clk)) / (1 << 4)) + 10000;
 
 	if (v3d->ver < 41) {
 		ret = map_regs(v3d, &v3d->gca_regs, "gca");
@@ -290,9 +326,6 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 		goto dev_free;
 	}
 
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_set_autosuspend_delay(dev, 50);
-	pm_runtime_enable(dev);
 
 	ret = drm_dev_init(&v3d->drm, &v3d_drm_driver, dev);
 	if (ret)
@@ -305,14 +338,21 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 	if (ret)
 		goto dev_destroy;
 
-	v3d_irq_init(v3d);
-
-	ret = drm_dev_register(drm, 0);
+	ret = v3d_irq_init(v3d);
 	if (ret)
 		goto gem_destroy;
 
+	ret = drm_dev_register(drm, 0);
+	if (ret)
+		goto irq_disable;
+
+	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
+	WARN_ON_ONCE(ret != 0);
+
 	return 0;
 
+irq_disable:
+	v3d_irq_disable(v3d);
 gem_destroy:
 	v3d_gem_destroy(drm);
 dev_destroy:
@@ -346,6 +386,7 @@ static struct platform_driver v3d_platform_driver = {
 	.driver		= {
 		.name	= "v3d",
 		.of_match_table = v3d_of_match,
+		.pm = &v3d_pm_ops,
 	},
 };
 

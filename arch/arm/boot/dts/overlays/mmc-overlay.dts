@@ -2,7 +2,7 @@
 /plugin/;
 
 /{
-	compatible = "brcm,bcm2708";
+	compatible = "brcm,bcm2835";
 
 	fragment@0 {
 		target = <&mmc>;
@@ -28,6 +28,13 @@
 
 	fragment@2 {
 		target = <&sdhost>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@3 {
+		target = <&mmcnr>;
 		__overlay__ {
 			status = "disabled";
 		};

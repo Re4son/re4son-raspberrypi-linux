@@ -1890,7 +1890,7 @@ static void update_dpp(struct dpp *dpp, struct dc_plane_state *plane_state)
 			plane_state->format,
 			EXPANSION_MODE_ZERO,
 			plane_state->input_csc_color_matrix,
-			COLOR_SPACE_YCBCR601_LIMITED);
+			plane_state->color_space);
 
 	//set scale and bias registers
 	build_prescale_params(&bns_params, plane_state);
@@ -2336,9 +2336,10 @@ static void dcn10_apply_ctx_for_surface(
 			}
 		}
 
-		if (!pipe_ctx->plane_state &&
-			old_pipe_ctx->plane_state &&
-			old_pipe_ctx->stream_res.tg == tg) {
+		if ((!pipe_ctx->plane_state ||
+		     pipe_ctx->stream_res.tg != old_pipe_ctx->stream_res.tg) &&
+		    old_pipe_ctx->plane_state &&
+		    old_pipe_ctx->stream_res.tg == tg) {
 
 			dc->hwss.plane_atomic_disconnect(dc, old_pipe_ctx);
 			removed_pipe[i] = true;

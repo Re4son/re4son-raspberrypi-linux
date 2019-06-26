@@ -9,6 +9,7 @@
  */
 
 #include <linux/pci.h>
+#include <linux/iopoll.h>
 #include <linux/irq.h>
 #include <linux/log2.h>
 #include <linux/module.h>
@@ -52,7 +53,6 @@ static bool td_on_ring(struct xhci_td *td, struct xhci_ring *ring)
 	return false;
 }
 
-/* TODO: copied from ehci-hcd.c - can this be refactored? */
 /*
  * xhci_handshake - spin reading hc until handshake completes or fails
  * @ptr: address of hc register to be read
@@ -69,18 +69,16 @@ static bool td_on_ring(struct xhci_td *td, struct xhci_ring *ring)
 int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, int usec)
 {
 	u32	result;
+	int	ret;
 
-	do {
-		result = readl(ptr);
-		if (result == ~(u32)0)		/* card removed */
-			return -ENODEV;
-		result &= mask;
-		if (result == done)
-			return 0;
-		udelay(1);
-		usec--;
-	} while (usec > 0);
-	return -ETIMEDOUT;
+	ret = readl_poll_timeout_atomic(ptr, result,
+					(result & mask) == done ||
+					result == U32_MAX,
+					1, usec);
+	if (result == U32_MAX)		/* card removed */
+		return -ENODEV;
+
+	return ret;
 }
 
 /*
@@ -198,8 +196,9 @@ int xhci_reset(struct xhci_hcd *xhci)
 	if (xhci->quirks & XHCI_INTEL_HOST)
 		udelay(1000);
 
+	// Hack: reduce handshake timeout from 10s 0.5s due to unprogrammed vl805
 	ret = xhci_handshake(&xhci->op_regs->command,
-			CMD_RESET, 0, 10 * 1000 * 1000);
+			CMD_RESET, 0, 500 * 1000);
 	if (ret)
 		return ret;
 
@@ -1414,6 +1413,103 @@ command_cleanup:
 		kfree(command);
 	}
 	return ret;
+}
+
+/*
+ * RPI: Fixup endpoint intervals when requested
+ * - Check interval versus the (cached) endpoint context
+ * - set the endpoint interval to the new value
+ * - force an endpoint configure command
+ * XXX: bandwidth is not recalculated. We should probably do that.
+ */
+static void xhci_fixup_endpoint(struct usb_hcd *hcd, struct usb_device *udev,
+				struct usb_host_endpoint *ep, int interval)
+{
+	struct xhci_hcd *xhci;
+	struct xhci_ep_ctx *ep_ctx_out, *ep_ctx_in;
+	struct xhci_command *command;
+	struct xhci_input_control_ctx *ctrl_ctx;
+	struct xhci_virt_device *vdev;
+	int xhci_interval;
+	int ret;
+	int ep_index;
+	unsigned long flags;
+	u32 ep_info_tmp;
+
+	xhci = hcd_to_xhci(hcd);
+	ep_index = xhci_get_endpoint_index(&ep->desc);
+
+	/* FS/LS interval translations */
+	if ((udev->speed == USB_SPEED_FULL ||
+	     udev->speed == USB_SPEED_LOW))
+		interval *= 8;
+
+	mutex_lock(&xhci->mutex);
+
+	spin_lock_irqsave(&xhci->lock, flags);
+
+	vdev = xhci->devs[udev->slot_id];
+	/* Get context-derived endpoint interval */
+	ep_ctx_out = xhci_get_ep_ctx(xhci, vdev->out_ctx, ep_index);
+	ep_ctx_in = xhci_get_ep_ctx(xhci, vdev->in_ctx, ep_index);
+	xhci_interval = EP_INTERVAL_TO_UFRAMES(le32_to_cpu(ep_ctx_out->ep_info));
+
+	if (interval == xhci_interval) {
+		spin_unlock_irqrestore(&xhci->lock, flags);
+		mutex_unlock(&xhci->mutex);
+		return;
+	}
+
+	xhci_dbg(xhci, "Fixup interval=%d xhci_interval=%d\n",
+		 interval, xhci_interval);
+	command = xhci_alloc_command_with_ctx(xhci, true, GFP_ATOMIC);
+	if (!command) {
+		/* Failure here is benign, poll at the original rate */
+		spin_unlock_irqrestore(&xhci->lock, flags);
+		mutex_unlock(&xhci->mutex);
+		return;
+	}
+
+	/* xHCI uses exponents for intervals... */
+	xhci_interval = fls(interval) - 1;
+	xhci_interval = clamp_val(xhci_interval, 3, 10);
+	ep_info_tmp = le32_to_cpu(ep_ctx_out->ep_info);
+	ep_info_tmp &= ~EP_INTERVAL(255);
+	ep_info_tmp |= EP_INTERVAL(xhci_interval);
+
+	/* Keep the endpoint context up-to-date while issuing the command. */
+	xhci_endpoint_copy(xhci, vdev->in_ctx,
+			   vdev->out_ctx, ep_index);
+	ep_ctx_in->ep_info = cpu_to_le32(ep_info_tmp);
+
+	/*
+	 * We need to drop the lock, so take an explicit copy
+	 * of the ep context.
+	 */
+	xhci_endpoint_copy(xhci, command->in_ctx, vdev->in_ctx, ep_index);
+
+	ctrl_ctx = xhci_get_input_control_ctx(command->in_ctx);
+	if (!ctrl_ctx) {
+		xhci_warn(xhci,
+			  "%s: Could not get input context, bad type.\n",
+			  __func__);
+		spin_unlock_irqrestore(&xhci->lock, flags);
+		xhci_free_command(xhci, command);
+		mutex_unlock(&xhci->mutex);
+		return;
+	}
+	ctrl_ctx->add_flags = xhci_get_endpoint_flag_from_index(ep_index);
+	ctrl_ctx->drop_flags = 0;
+
+	spin_unlock_irqrestore(&xhci->lock, flags);
+
+	ret = xhci_configure_endpoint(xhci, udev, command,
+				      false, false);
+	if (ret)
+		xhci_warn(xhci, "%s: Configure endpoint failed: %d\n",
+			  __func__, ret);
+	xhci_free_command(xhci, command);
+	mutex_unlock(&xhci->mutex);
 }
 
 /*
@@ -4289,7 +4385,6 @@ static int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 	pm_addr = ports[port_num]->addr + PORTPMSC;
 	pm_val = readl(pm_addr);
 	hlpm_addr = ports[port_num]->addr + PORTHLPMC;
-	field = le32_to_cpu(udev->bos->ext_cap->bmAttributes);
 
 	xhci_dbg(xhci, "%s port %d USB2 hardware LPM\n",
 			enable ? "enable" : "disable", port_num + 1);
@@ -4301,6 +4396,7 @@ static int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 			 * default one which works with mixed HIRD and BESL
 			 * systems. See XHCI_DEFAULT_BESL definition in xhci.h
 			 */
+			field = le32_to_cpu(udev->bos->ext_cap->bmAttributes);
 			if ((field & USB_BESL_SUPPORT) &&
 			    (field & USB_BESL_BASELINE_VALID))
 				hird = USB_GET_BESL_BASELINE(field);
@@ -5166,6 +5262,7 @@ static const struct hc_driver xhci_hc_driver = {
 	.endpoint_reset =	xhci_endpoint_reset,
 	.check_bandwidth =	xhci_check_bandwidth,
 	.reset_bandwidth =	xhci_reset_bandwidth,
+	.fixup_endpoint =	xhci_fixup_endpoint,
 	.address_device =	xhci_address_device,
 	.enable_device =	xhci_enable_device,
 	.update_hub_device =	xhci_update_hub_device,

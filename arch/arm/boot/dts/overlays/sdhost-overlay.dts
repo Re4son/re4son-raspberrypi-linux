@@ -4,7 +4,7 @@
 /* Provide backwards compatible aliases for the old sdhost dtparams. */
 
 /{
-	compatible = "brcm,bcm2708";
+	compatible = "brcm,bcm2835";
 
 	fragment@0 {
 		target = <&sdhost>;
@@ -17,6 +17,13 @@
 
 	fragment@1 {
 		target = <&mmc>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@2 {
+		target = <&mmcnr>;
 		__overlay__ {
 			status = "disabled";
 		};

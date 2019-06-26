@@ -85,6 +85,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_ICS43432
 	select SND_SOC_INNO_RK3036
 	select SND_SOC_ISABELLE if I2C
+	select SND_SOC_I_SABRE_CODEC if I2C
 	select SND_SOC_JZ4740_CODEC
 	select SND_SOC_LM4857 if I2C
 	select SND_SOC_LM49453 if I2C
@@ -170,8 +171,8 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_TAS5713 if I2C
 	select SND_SOC_TLV320AIC26 if SPI_MASTER
 	select SND_SOC_TLV320AIC31XX if I2C
-	select SND_SOC_TLV320AIC32X4_I2C if I2C
-	select SND_SOC_TLV320AIC32X4_SPI if SPI_MASTER
+	select SND_SOC_TLV320AIC32X4_I2C if I2C && COMMON_CLK
+	select SND_SOC_TLV320AIC32X4_SPI if SPI_MASTER && COMMON_CLK
 	select SND_SOC_TLV320AIC3X if I2C
 	select SND_SOC_TPA6130A2 if I2C
 	select SND_SOC_TLV320DAC33 if I2C
@@ -1025,15 +1026,18 @@ config SND_SOC_TLV320AIC31XX
 
 config SND_SOC_TLV320AIC32X4
 	tristate
+	depends on COMMON_CLK
 
 config SND_SOC_TLV320AIC32X4_I2C
 	tristate "Texas Instruments TLV320AIC32x4 audio CODECs - I2C"
 	depends on I2C
+	depends on COMMON_CLK
 	select SND_SOC_TLV320AIC32X4
 
 config SND_SOC_TLV320AIC32X4_SPI
 	tristate "Texas Instruments TLV320AIC32x4 audio CODECs - SPI"
 	depends on SPI_MASTER
+	depends on COMMON_CLK
 	select SND_SOC_TLV320AIC32X4
 
 config SND_SOC_TLV320AIC3X
@@ -1317,6 +1321,10 @@ config SND_SOC_NAU8825
 
 config SND_SOC_TPA6130A2
 	tristate "Texas Instruments TPA6130A2 headphone amplifier"
+	depends on I2C
+
+config SND_SOC_I_SABRE_CODEC
+	tristate "Audiophonics I-SABRE Codec"
 	depends on I2C
 
 endmenu

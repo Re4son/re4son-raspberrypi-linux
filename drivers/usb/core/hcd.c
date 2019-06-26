@@ -2071,6 +2071,16 @@ reset:
 	return ret;
 }
 
+void usb_hcd_fixup_endpoint(struct usb_device *udev,
+			    struct usb_host_endpoint *ep, int interval)
+{
+	struct usb_hcd *hcd;
+
+	hcd = bus_to_hcd(udev->bus);
+	if (hcd->driver->fixup_endpoint)
+		hcd->driver->fixup_endpoint(hcd, udev, ep, interval);
+}
+
 /* Disables the endpoint: synchronizes with the hcd to make sure all
  * endpoint state is gone from hardware.  usb_hcd_flush_endpoint() must
  * have been called previously.  Use for set_configuration, set_interface,
@@ -3016,6 +3026,9 @@ void
 usb_hcd_platform_shutdown(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
+
+	/* No need for pm_runtime_put(), we're shutting down */
+	pm_runtime_get_sync(&dev->dev);
 
 	if (hcd->driver->shutdown)
 		hcd->driver->shutdown(hcd);

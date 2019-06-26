@@ -1,7 +1,6 @@
 # Overlays for the Raspberry Pi platform
 
 dtbo-$(CONFIG_ARCH_BCM2835) += \
-	3dlab-nano-player.dtbo \
 	adau1977-adc.dtbo \
 	adau7002-simple.dtbo \
 	ads1015.dtbo \
@@ -29,6 +28,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	dionaudio-loco-v2.dtbo \
 	dpi18.dtbo \
 	dpi24.dtbo \
+	draws.dtbo \
 	dwc-otg.dtbo \
 	dwc2.dtbo \
 	enc28j60.dtbo \
@@ -55,6 +55,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	hy28a.dtbo \
 	hy28b.dtbo \
 	hy28b-2017.dtbo \
+	i-sabre-q2m.dtbo \
 	i2c-bcm2708.dtbo \
 	i2c-gpio.dtbo \
 	i2c-mux.dtbo \
@@ -64,7 +65,13 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	i2c-sensor.dtbo \
 	i2c0-bcm2708.dtbo \
 	i2c1-bcm2708.dtbo \
+	i2c3.dtbo \
+	i2c4.dtbo \
+	i2c5.dtbo \
+	i2c6.dtbo \
 	i2s-gpio28-31.dtbo \
+	ilitek251x.dtbo \
+	iqaudio-codec.dtbo \
 	iqaudio-dac.dtbo \
 	iqaudio-dacplus.dtbo \
 	iqaudio-digi-wm8804-audio.dtbo \
@@ -72,6 +79,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	justboom-dac.dtbo \
 	justboom-digi.dtbo \
 	ltc294x.dtbo \
+	max98357a.dtbo \
 	mbed-dac.dtbo \
 	mcp23017.dtbo \
 	mcp23s17.dtbo \
@@ -93,6 +101,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	pi3-disable-wifi.dtbo \
 	pi3-miniuart-bt.dtbo \
 	pibell.dtbo \
+	piglow.dtbo \
 	piscreen.dtbo \
 	piscreen2r.dtbo \
 	pisound.dtbo \
@@ -121,12 +130,12 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	sc16is752-spi1.dtbo \
 	sdhost.dtbo \
 	sdio.dtbo \
-	sdio-1bit.dtbo \
 	sdtweak.dtbo \
 	smi.dtbo \
 	smi-dev.dtbo \
 	smi-nand.dtbo \
 	spi-gpio35-39.dtbo \
+	spi-gpio40-45.dtbo \
 	spi-rtc.dtbo \
 	spi0-cs.dtbo \
 	spi0-hw-cs.dtbo \
@@ -136,6 +145,14 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	spi2-1cs.dtbo \
 	spi2-2cs.dtbo \
 	spi2-3cs.dtbo \
+	spi3-1cs.dtbo \
+	spi3-2cs.dtbo \
+	spi4-1cs.dtbo \
+	spi4-2cs.dtbo \
+	spi5-1cs.dtbo \
+	spi5-2cs.dtbo \
+	spi6-1cs.dtbo \
+	spi6-2cs.dtbo \
 	ssd1306.dtbo \
 	superaudioboard.dtbo \
 	sx150x.dtbo \
@@ -145,8 +162,12 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	tpm-slb9670.dtbo \
 	uart0.dtbo \
 	uart1.dtbo \
+	uart2.dtbo \
+	uart3.dtbo \
+	uart4.dtbo \
+	uart5.dtbo \
+	udrc.dtbo \
 	upstream.dtbo \
-	upstream-aux-interrupt.dtbo \
 	vc4-fkms-v3d.dtbo \
 	vc4-kms-kippah-7inch.dtbo \
 	vc4-kms-v3d.dtbo \

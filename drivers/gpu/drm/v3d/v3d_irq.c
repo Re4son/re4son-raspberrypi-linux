@@ -4,9 +4,9 @@
 /**
  * DOC: Interrupt management for the V3D engine
  *
- * When we take a binning or rendering flush done interrupt, we need
- * to signal the fence for that job so that the scheduler can queue up
- * the next one and unblock any waiters.
+ * When we take a bin, render, TFU done, or CSD done interrupt, we
+ * need to signal the fence for that job so that the scheduler can
+ * queue up the next one and unblock any waiters.
  *
  * When we take the binner out of memory interrupt, we need to
  * allocate some new memory and pass it to the binner so that the
@@ -15,15 +15,21 @@
 
 #include "v3d_drv.h"
 #include "v3d_regs.h"
+#include "v3d_trace.h"
 
 #define V3D_CORE_IRQS ((u32)(V3D_INT_OUTOMEM |	\
 			     V3D_INT_FLDONE |	\
 			     V3D_INT_FRDONE |	\
+			     V3D_INT_CSDDONE |	\
 			     V3D_INT_GMPV))
 
 #define V3D_HUB_IRQS ((u32)(V3D_HUB_INT_MMU_WRV |	\
 			    V3D_HUB_INT_MMU_PTI |	\
-			    V3D_HUB_INT_MMU_CAP))
+			    V3D_HUB_INT_MMU_CAP |	\
+			    V3D_HUB_INT_TFUC))
+
+static irqreturn_t
+v3d_hub_irq(int irq, void *arg);
 
 static void
 v3d_overflow_mem_work(struct work_struct *work)
@@ -55,7 +61,7 @@ v3d_overflow_mem_work(struct work_struct *work)
 	}
 
 	drm_gem_object_get(&bo->base);
-	list_add_tail(&bo->unref_head, &v3d->bin_job->unref_list);
+	list_add_tail(&bo->unref_head, &v3d->bin_job->render->unref_list);
 	spin_unlock_irqrestore(&v3d->job_lock, irqflags);
 
 	V3D_CORE_WRITE(0, V3D_PTB_BPOA, bo->node.start << PAGE_SHIFT);
@@ -87,12 +93,29 @@ v3d_irq(int irq, void *arg)
 	}
 
 	if (intsts & V3D_INT_FLDONE) {
-		dma_fence_signal(v3d->bin_job->bin.done_fence);
+		struct v3d_fence *fence =
+			to_v3d_fence(v3d->bin_job->base.irq_fence);
+
+		trace_v3d_bcl_irq(&v3d->drm, fence->seqno);
+		dma_fence_signal(&fence->base);
 		status = IRQ_HANDLED;
 	}
 
 	if (intsts & V3D_INT_FRDONE) {
-		dma_fence_signal(v3d->render_job->render.done_fence);
+		struct v3d_fence *fence =
+			to_v3d_fence(v3d->render_job->base.irq_fence);
+
+		trace_v3d_rcl_irq(&v3d->drm, fence->seqno);
+		dma_fence_signal(&fence->base);
+		status = IRQ_HANDLED;
+	}
+
+	if (intsts & V3D_INT_CSDDONE) {
+		struct v3d_fence *fence =
+			to_v3d_fence(v3d->csd_job->base.irq_fence);
+
+		trace_v3d_csd_irq(&v3d->drm, fence->seqno);
+		dma_fence_signal(&fence->base);
 		status = IRQ_HANDLED;
 	}
 
@@ -101,6 +124,12 @@ v3d_irq(int irq, void *arg)
 	 */
 	if (intsts & V3D_INT_GMPV)
 		dev_err(v3d->dev, "GMP violation\n");
+
+	/* V3D 4.2 wires the hub and core IRQs together, so if we &
+	 * didn't see the common one then check hub for MMU IRQs.
+	 */
+	if (v3d->single_irq_line && status == IRQ_NONE)
+		return v3d_hub_irq(irq, arg);
 
 	return status;
 }
@@ -116,6 +145,15 @@ v3d_hub_irq(int irq, void *arg)
 
 	/* Acknowledge the interrupts we're handling here. */
 	V3D_WRITE(V3D_HUB_INT_CLR, intsts);
+
+	if (intsts & V3D_HUB_INT_TFUC) {
+		struct v3d_fence *fence =
+			to_v3d_fence(v3d->tfu_job->base.irq_fence);
+
+		trace_v3d_tfu_irq(&v3d->drm, fence->seqno);
+		dma_fence_signal(&fence->base);
+		status = IRQ_HANDLED;
+	}
 
 	if (intsts & (V3D_HUB_INT_MMU_WRV |
 		      V3D_HUB_INT_MMU_PTI |
@@ -137,10 +175,10 @@ v3d_hub_irq(int irq, void *arg)
 	return status;
 }
 
-void
+int
 v3d_irq_init(struct v3d_dev *v3d)
 {
-	int ret, core;
+	int irq1, ret, core;
 
 	INIT_WORK(&v3d->overflow_mem_work, v3d_overflow_mem_work);
 
@@ -151,16 +189,37 @@ v3d_irq_init(struct v3d_dev *v3d)
 		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS);
 	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS);
 
-	ret = devm_request_irq(v3d->dev, platform_get_irq(v3d->pdev, 0),
-			       v3d_hub_irq, IRQF_SHARED,
-			       "v3d_hub", v3d);
-	ret = devm_request_irq(v3d->dev, platform_get_irq(v3d->pdev, 1),
-			       v3d_irq, IRQF_SHARED,
-			       "v3d_core0", v3d);
-	if (ret)
-		dev_err(v3d->dev, "IRQ setup failed: %d\n", ret);
+	irq1 = platform_get_irq(v3d->pdev, 1);
+	if (irq1 == -EPROBE_DEFER)
+		return irq1;
+	if (irq1 > 0) {
+		ret = devm_request_irq(v3d->dev, irq1,
+				       v3d_irq, IRQF_SHARED,
+				       "v3d_core0", v3d);
+		if (ret)
+			goto fail;
+		ret = devm_request_irq(v3d->dev, platform_get_irq(v3d->pdev, 0),
+				       v3d_hub_irq, IRQF_SHARED,
+				       "v3d_hub", v3d);
+		if (ret)
+			goto fail;
+	} else {
+		v3d->single_irq_line = true;
+
+		ret = devm_request_irq(v3d->dev, platform_get_irq(v3d->pdev, 0),
+				       v3d_irq, IRQF_SHARED,
+				       "v3d", v3d);
+		if (ret)
+			goto fail;
+	}
 
 	v3d_irq_enable(v3d);
+	return 0;
+
+fail:
+	if (ret != -EPROBE_DEFER)
+		dev_err(v3d->dev, "IRQ setup failed: %d\n", ret);
+	return ret;
 }
 
 void

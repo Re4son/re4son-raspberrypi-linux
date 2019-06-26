@@ -77,6 +77,12 @@ enum bcm2835_codec_role {
 	ISP,
 };
 
+const static char *roles[] = {
+	"decode",
+	"encode",
+	"isp"
+};
+
 static const char * const components[] = {
 	"ril.video_decode",
 	"ril.video_encode",
@@ -441,6 +447,8 @@ struct bcm2835_codec_ctx {
 	/* Source and destination queue data */
 	struct bcm2835_codec_q_data   q_data[2];
 	s32  bitrate;
+	unsigned int	framerate_num;
+	unsigned int	framerate_denom;
 
 	bool aborting;
 	int num_ip_buffers;
@@ -572,10 +580,17 @@ static void job_abort(void *priv)
 	ctx->aborting = 1;
 }
 
-static inline unsigned int get_sizeimage(int bpl, int height,
+static inline unsigned int get_sizeimage(int bpl, int width, int height,
 					 struct bcm2835_codec_fmt *fmt)
 {
-	return (bpl * height * fmt->size_multiplier_x2) >> 1;
+	if (fmt->flags & V4L2_FMT_FLAG_COMPRESSED) {
+		if (width * height > 1280 * 720)
+			return DEF_COMP_BUF_SIZE_GREATER_720P;
+		else
+			return DEF_COMP_BUF_SIZE_720P_OR_LESS;
+	} else {
+		return (bpl * height * fmt->size_multiplier_x2) >> 1;
+	}
 }
 
 static inline unsigned int get_bytesperline(int width,
@@ -592,13 +607,13 @@ static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
 
 	if (!(q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED)) {
 		/* Raw image format - set width/height */
-		port->es.video.width = q_data->bytesperline /
-						(q_data->fmt->depth >> 3);
+		port->es.video.width = (q_data->bytesperline << 3) /
+						q_data->fmt->depth;
 		port->es.video.height = q_data->height;
 		port->es.video.crop.width = q_data->crop_width;
 		port->es.video.crop.height = q_data->crop_height;
-		port->es.video.frame_rate.num = 0;
-		port->es.video.frame_rate.den = 1;
+		port->es.video.frame_rate.num = ctx->framerate_num;
+		port->es.video.frame_rate.den = ctx->framerate_denom;
 	} else {
 		/* Compressed format - leave resolution as 0 for decode */
 		if (ctx->dev->role == DECODE) {
@@ -612,9 +627,9 @@ static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
 			port->es.video.crop.width = q_data->crop_width;
 			port->es.video.crop.height = q_data->crop_height;
 			port->format.bitrate = ctx->bitrate;
+			port->es.video.frame_rate.num = ctx->framerate_num;
+			port->es.video.frame_rate.den = ctx->framerate_denom;
 		}
-		port->es.video.frame_rate.num = 0;
-		port->es.video.frame_rate.den = 1;
 	}
 	port->es.video.crop.x = 0;
 	port->es.video.crop.y = 0;
@@ -810,7 +825,8 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 		vb2->flags |= V4L2_BUF_FLAG_LAST;
 	}
 
-	vb2->vb2_buf.timestamp = mmal_buf->pts;
+	/* vb2 timestamps in nsecs, mmal in usecs */
+	vb2->vb2_buf.timestamp = mmal_buf->pts * 1000;
 
 	vb2_set_plane_payload(&vb2->vb2_buf, 0, mmal_buf->length);
 	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME)
@@ -834,6 +850,7 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf,
 			       struct vb2_v4l2_buffer *vb2)
 {
+	u64 pts;
 	buf->mmal.mmal_flags = 0;
 	if (vb2->flags & V4L2_BUF_FLAG_KEYFRAME)
 		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_FLAG_KEYFRAME;
@@ -856,7 +873,10 @@ static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf,
 	if (!buf->mmal.length || vb2->flags & V4L2_BUF_FLAG_LAST)
 		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_FLAG_EOS;
 
-	buf->mmal.pts = vb2->vb2_buf.timestamp;
+	/* vb2 timestamps in nsecs, mmal in usecs */
+	pts = vb2->vb2_buf.timestamp;
+	do_div(pts, 1000);
+	buf->mmal.pts = pts;
 	buf->mmal.dts = MMAL_TIME_UNKNOWN;
 }
 
@@ -1002,7 +1022,8 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 	return vidioc_g_fmt(file2ctx(file), f);
 }
 
-static int vidioc_try_fmt(struct v4l2_format *f, struct bcm2835_codec_fmt *fmt)
+static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
+			  struct bcm2835_codec_fmt *fmt)
 {
 	/*
 	 * The V4L2 specification requires the driver to correct the format
@@ -1021,27 +1042,20 @@ static int vidioc_try_fmt(struct v4l2_format *f, struct bcm2835_codec_fmt *fmt)
 			f->fmt.pix.height = MIN_H;
 
 		/*
-		 * Buffer must have a vertical alignment of 16 lines.
+		 * For codecs the buffer must have a vertical alignment of 16
+		 * lines.
 		 * The selection will reflect any cropping rectangle when only
 		 * some of the pixels are active.
 		 */
-		f->fmt.pix.height = ALIGN(f->fmt.pix.height, 16);
-
-		f->fmt.pix.bytesperline = get_bytesperline(f->fmt.pix.width,
-							   fmt);
-		f->fmt.pix.sizeimage = get_sizeimage(f->fmt.pix.bytesperline,
-						     f->fmt.pix.height,
-						     fmt);
-	} else {
-		u32 min_size = f->fmt.pix.width > 1280 ||
-			       f->fmt.pix.height > 720 ?
-			       DEF_COMP_BUF_SIZE_GREATER_720P :
-			       DEF_COMP_BUF_SIZE_720P_OR_LESS;
-
-		f->fmt.pix.bytesperline = 0;
-		if (f->fmt.pix.sizeimage < min_size)
-			f->fmt.pix.sizeimage = min_size;
+		if (ctx->dev->role != ISP)
+			f->fmt.pix.height = ALIGN(f->fmt.pix.height, 16);
 	}
+	f->fmt.pix.bytesperline = get_bytesperline(f->fmt.pix.width,
+						   fmt);
+	f->fmt.pix.sizeimage = get_sizeimage(f->fmt.pix.bytesperline,
+					     f->fmt.pix.width,
+					     f->fmt.pix.height,
+					     fmt);
 
 	f->fmt.pix.field = V4L2_FIELD_NONE;
 
@@ -1061,7 +1075,7 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 		fmt = find_format(f, ctx->dev, true);
 	}
 
-	return vidioc_try_fmt(f, fmt);
+	return vidioc_try_fmt(ctx, f, fmt);
 }
 
 static int vidioc_try_fmt_vid_out(struct file *file, void *priv,
@@ -1080,7 +1094,7 @@ static int vidioc_try_fmt_vid_out(struct file *file, void *priv,
 	if (!f->fmt.pix.colorspace)
 		f->fmt.pix.colorspace = ctx->colorspace;
 
-	return vidioc_try_fmt(f, fmt);
+	return vidioc_try_fmt(ctx, f, fmt);
 }
 
 static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
@@ -1153,6 +1167,7 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 		q_data_dst->bytesperline =
 			get_bytesperline(f->fmt.pix.width, q_data_dst->fmt);
 		q_data_dst->sizeimage = get_sizeimage(q_data_dst->bytesperline,
+						      q_data_dst->crop_width,
 						      q_data_dst->height,
 						      q_data_dst->fmt);
 		update_capture_port = true;
@@ -1344,6 +1359,41 @@ static int vidioc_s_selection(struct file *file, void *priv,
 	case ISP:
 		break;
 	}
+
+	return 0;
+}
+
+static int vidioc_s_parm(struct file *file, void *priv,
+			 struct v4l2_streamparm *parm)
+{
+	struct bcm2835_codec_ctx *ctx = file2ctx(file);
+
+	if (parm->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		return -EINVAL;
+
+	ctx->framerate_num =
+			parm->parm.output.timeperframe.denominator;
+	ctx->framerate_denom =
+			parm->parm.output.timeperframe.numerator;
+
+	parm->parm.output.capability = V4L2_CAP_TIMEPERFRAME;
+
+	return 0;
+}
+
+static int vidioc_g_parm(struct file *file, void *priv,
+			 struct v4l2_streamparm *parm)
+{
+	struct bcm2835_codec_ctx *ctx = file2ctx(file);
+
+	if (parm->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		return -EINVAL;
+
+	parm->parm.output.capability = V4L2_CAP_TIMEPERFRAME;
+	parm->parm.output.timeperframe.denominator =
+			ctx->framerate_num;
+	parm->parm.output.timeperframe.numerator =
+			ctx->framerate_denom;
 
 	return 0;
 }
@@ -1712,6 +1762,9 @@ static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
 	.vidioc_g_selection	= vidioc_g_selection,
 	.vidioc_s_selection	= vidioc_s_selection,
 
+	.vidioc_g_parm		= vidioc_g_parm,
+	.vidioc_s_parm		= vidioc_s_parm,
+
 	.vidioc_subscribe_event = vidioc_subscribe_evt,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 
@@ -1776,13 +1829,21 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 
 	ret = vchiq_mmal_port_set_format(dev->instance,
 					 &ctx->component->input[0]);
-	if (ret < 0)
+	if (ret < 0) {
+		v4l2_dbg(1, debug, &dev->v4l2_dev,
+			 "%s: vchiq_mmal_port_set_format ip port failed\n",
+			 __func__);
 		goto destroy_component;
+	}
 
 	ret = vchiq_mmal_port_set_format(dev->instance,
 					 &ctx->component->output[0]);
-	if (ret < 0)
+	if (ret < 0) {
+		v4l2_dbg(1, debug, &dev->v4l2_dev,
+			 "%s: vchiq_mmal_port_set_format op port failed\n",
+			 __func__);
 		goto destroy_component;
+	}
 
 	if (dev->role == ENCODE) {
 		u32 param = 1;
@@ -1812,11 +1873,14 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 				 ctx->q_data[V4L2_M2M_DST].sizeimage,
 				 ctx->component->output[0].minimum_buffer.size);
 	}
+	v4l2_dbg(2, debug, &dev->v4l2_dev, "%s: component created as %s\n",
+		 __func__, components[dev->role]);
 
 	return 0;
 
 destroy_component:
 	vchiq_mmal_component_finalise(ctx->dev->instance, ctx->component);
+	ctx->component = NULL;
 
 	return ret;
 }
@@ -2201,52 +2265,30 @@ static int bcm2835_codec_open(struct file *file)
 
 	ctx->q_data[V4L2_M2M_SRC].fmt = get_default_format(dev, false);
 	ctx->q_data[V4L2_M2M_DST].fmt = get_default_format(dev, true);
-	switch (dev->role) {
-	case DECODE:
-		/*
-		 * Input width and height are irrelevant as they will be defined
-		 * by the bitstream not the format. Required by V4L2 though.
-		 */
-		ctx->q_data[V4L2_M2M_SRC].crop_width = DEFAULT_WIDTH;
-		ctx->q_data[V4L2_M2M_SRC].crop_height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_SRC].bytesperline = 0;
-		ctx->q_data[V4L2_M2M_SRC].sizeimage =
-						DEF_COMP_BUF_SIZE_720P_OR_LESS;
 
-		ctx->q_data[V4L2_M2M_DST].crop_width = DEFAULT_WIDTH;
-		ctx->q_data[V4L2_M2M_DST].crop_height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_DST].bytesperline =
-				get_bytesperline(DEFAULT_WIDTH,
-						 ctx->q_data[V4L2_M2M_DST].fmt);
-		ctx->q_data[V4L2_M2M_DST].sizeimage =
-			get_sizeimage(ctx->q_data[V4L2_M2M_DST].bytesperline,
-				      ctx->q_data[V4L2_M2M_DST].height,
-				      ctx->q_data[V4L2_M2M_DST].fmt);
-		break;
-	case ENCODE:
-		ctx->q_data[V4L2_M2M_SRC].crop_width = DEFAULT_WIDTH;
-		ctx->q_data[V4L2_M2M_SRC].crop_height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_SRC].bytesperline =
-				get_bytesperline(DEFAULT_WIDTH,
-						 ctx->q_data[V4L2_M2M_SRC].fmt);
-		ctx->q_data[V4L2_M2M_SRC].sizeimage =
-			get_sizeimage(ctx->q_data[V4L2_M2M_SRC].bytesperline,
-				      ctx->q_data[V4L2_M2M_SRC].height,
-				      ctx->q_data[V4L2_M2M_SRC].fmt);
+	ctx->q_data[V4L2_M2M_SRC].crop_width = DEFAULT_WIDTH;
+	ctx->q_data[V4L2_M2M_SRC].crop_height = DEFAULT_HEIGHT;
+	ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
+	ctx->q_data[V4L2_M2M_SRC].bytesperline =
+			get_bytesperline(DEFAULT_WIDTH,
+					 ctx->q_data[V4L2_M2M_SRC].fmt);
+	ctx->q_data[V4L2_M2M_SRC].sizeimage =
+		get_sizeimage(ctx->q_data[V4L2_M2M_SRC].bytesperline,
+			      ctx->q_data[V4L2_M2M_SRC].crop_width,
+			      ctx->q_data[V4L2_M2M_SRC].height,
+			      ctx->q_data[V4L2_M2M_SRC].fmt);
 
-		ctx->q_data[V4L2_M2M_DST].crop_width = DEFAULT_WIDTH;
-		ctx->q_data[V4L2_M2M_DST].crop_height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_DST].bytesperline = 0;
-		ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
-		ctx->q_data[V4L2_M2M_DST].sizeimage =
-						DEF_COMP_BUF_SIZE_720P_OR_LESS;
-		break;
-	case ISP:
-		break;
-	}
+	ctx->q_data[V4L2_M2M_DST].crop_width = DEFAULT_WIDTH;
+	ctx->q_data[V4L2_M2M_DST].crop_height = DEFAULT_HEIGHT;
+	ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
+	ctx->q_data[V4L2_M2M_DST].bytesperline =
+			get_bytesperline(DEFAULT_WIDTH,
+					 ctx->q_data[V4L2_M2M_DST].fmt);
+	ctx->q_data[V4L2_M2M_DST].sizeimage =
+		get_sizeimage(ctx->q_data[V4L2_M2M_DST].bytesperline,
+			      ctx->q_data[V4L2_M2M_DST].crop_width,
+			      ctx->q_data[V4L2_M2M_DST].height,
+			      ctx->q_data[V4L2_M2M_DST].fmt);
 
 	ctx->colorspace = V4L2_COLORSPACE_REC709;
 	ctx->bitrate = 10 * 1000 * 1000;
@@ -2511,7 +2553,6 @@ static int bcm2835_codec_create(struct platform_device *pdev,
 	struct video_device *vfd;
 	int video_nr;
 	int ret;
-	const static char *roles[] = {"decode", "encode", "isp"};
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -2545,6 +2586,8 @@ static int bcm2835_codec_create(struct platform_device *pdev,
 	case DECODE:
 		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
+		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
 		video_nr = decode_video_nr;
 		break;
 	case ENCODE:
@@ -2557,6 +2600,8 @@ static int bcm2835_codec_create(struct platform_device *pdev,
 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
+		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
 		video_nr = isp_video_nr;
 		break;
 	default:
@@ -2604,7 +2649,8 @@ static int bcm2835_codec_destroy(struct bcm2835_codec_dev *dev)
 	if (!dev)
 		return -ENODEV;
 
-	v4l2_info(&dev->v4l2_dev, "Removing " MEM2MEM_NAME);
+	v4l2_info(&dev->v4l2_dev, "Removing " MEM2MEM_NAME ", %s\n",
+		  roles[dev->role]);
 	v4l2_m2m_release(dev->m2m_dev);
 	video_unregister_device(&dev->vfd);
 	v4l2_device_unregister(&dev->v4l2_dev);

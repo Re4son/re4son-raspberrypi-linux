@@ -7,19 +7,20 @@
 #include <drm/drm_encoder.h>
 #include <drm/drm_gem.h>
 #include <drm/gpu_scheduler.h>
+#include "uapi/drm/v3d_drm.h"
 
 #define GMP_GRANULARITY (128 * 1024)
 
-/* Enum for each of the V3D queues.  We maintain various queue
- * tracking as an array because at some point we'll want to support
- * the TFU (texture formatting unit) as another queue.
- */
+/* Enum for each of the V3D queues. */
 enum v3d_queue {
 	V3D_BIN,
 	V3D_RENDER,
+	V3D_TFU,
+	V3D_CSD,
+	V3D_CACHE_CLEAN,
 };
 
-#define V3D_MAX_QUEUES (V3D_RENDER + 1)
+#define V3D_MAX_QUEUES (V3D_CACHE_CLEAN + 1)
 
 struct v3d_queue_state {
 	struct drm_gpu_scheduler sched;
@@ -35,6 +36,7 @@ struct v3d_dev {
 	 * and revision.
 	 */
 	int ver;
+	bool single_irq_line;
 
 	struct device *dev;
 	struct platform_device *pdev;
@@ -43,6 +45,13 @@ struct v3d_dev {
 	void __iomem *bridge_regs;
 	void __iomem *gca_regs;
 	struct clk *clk;
+	struct delayed_work clk_down_work;
+	unsigned long clk_up_rate, clk_down_rate;
+	struct mutex clk_lock;
+	u32 clk_refcount;
+	bool clk_up;
+
+	struct reset_control *reset;
 
 	/* Virtual and DMA addresses of the single shared page table. */
 	volatile u32 *pt;
@@ -66,8 +75,10 @@ struct v3d_dev {
 
 	struct work_struct overflow_mem_work;
 
-	struct v3d_exec_info *bin_job;
-	struct v3d_exec_info *render_job;
+	struct v3d_bin_job *bin_job;
+	struct v3d_render_job *render_job;
+	struct v3d_tfu_job *tfu_job;
+	struct v3d_csd_job *csd_job;
 
 	struct v3d_queue_state queue[V3D_MAX_QUEUES];
 
@@ -90,6 +101,12 @@ struct v3d_dev {
 	 */
 	struct mutex sched_lock;
 
+	/* Lock taken during a cache clean and when initiating an L2
+	 * flush, to keep L2 flushes from interfering with the
+	 * synchronous L2 cleans.
+	 */
+	struct mutex cache_clean_lock;
+
 	struct {
 		u32 num_allocated;
 		u32 pages_allocated;
@@ -100,6 +117,12 @@ static inline struct v3d_dev *
 to_v3d_dev(struct drm_device *dev)
 {
 	return (struct v3d_dev *)dev->dev_private;
+}
+
+static inline bool
+v3d_has_csd(struct v3d_dev *v3d)
+{
+	return v3d->ver >= 41;
 }
 
 /* The per-fd struct, which tracks the MMU mappings. */
@@ -130,7 +153,7 @@ struct v3d_bo {
 	struct list_head vmas;    /* list of v3d_vma */
 
 	/* List entry for the BO's position in
-	 * v3d_exec_info->unref_list
+	 * v3d_render_job->unref_list
 	 */
 	struct list_head unref_head;
 
@@ -174,43 +197,73 @@ to_v3d_fence(struct dma_fence *fence)
 struct v3d_job {
 	struct drm_sched_job base;
 
-	struct v3d_exec_info *exec;
+	struct kref refcount;
 
-	/* An optional fence userspace can pass in for the job to depend on. */
-	struct dma_fence *in_fence;
+	struct v3d_dev *v3d;
+
+	/* This is the array of BOs that were looked up at the start
+	 * of submission.
+	 */
+	struct v3d_bo **bo;
+	u32 bo_count;
+
+	struct dma_fence **deps;
+	int deps_count;
+	int deps_size;
 
 	/* v3d fence to be signaled by IRQ handler when the job is complete. */
+	struct dma_fence *irq_fence;
+
+	/* scheduler fence for when the job is considered complete and
+	 * the BO reservations can be released.
+	 */
 	struct dma_fence *done_fence;
+
+	/* Callback for the freeing of the job on refcount going to 0. */
+	void (*free)(struct kref *ref);
+};
+
+struct v3d_bin_job {
+	struct v3d_job base;
 
 	/* GPU virtual addresses of the start/end of the CL job. */
 	u32 start, end;
 
 	u32 timedout_ctca, timedout_ctra;
+
+	/* Corresponding render job, for attaching our overflow memory. */
+	struct v3d_render_job *render;
+
+	/* Submitted tile memory allocation start/size, tile state. */
+	u32 qma, qms, qts;
 };
 
-struct v3d_exec_info {
-	struct v3d_dev *v3d;
+struct v3d_render_job {
+	struct v3d_job base;
 
-	struct v3d_job bin, render;
+	/* GPU virtual addresses of the start/end of the CL job. */
+	u32 start, end;
 
-	/* Fence for when the scheduler considers the binner to be
-	 * done, for render to depend on.
-	 */
-	struct dma_fence *bin_done_fence;
-
-	struct kref refcount;
-
-	/* This is the array of BOs that were looked up at the start of exec. */
-	struct v3d_bo **bo;
-	u32 bo_count;
+	u32 timedout_ctca, timedout_ctra;
 
 	/* List of overflow BOs used in the job that need to be
 	 * released once the job is complete.
 	 */
 	struct list_head unref_list;
+};
 
-	/* Submitted tile memory allocation start/size, tile state. */
-	u32 qma, qms, qts;
+struct v3d_tfu_job {
+	struct v3d_job base;
+
+	struct drm_v3d_submit_tfu args;
+};
+
+struct v3d_csd_job {
+	struct v3d_job base;
+
+	u32 timedout_batches;
+
+	struct drm_v3d_submit_csd args;
 };
 
 /**
@@ -276,15 +329,19 @@ int v3d_gem_init(struct drm_device *dev);
 void v3d_gem_destroy(struct drm_device *dev);
 int v3d_submit_cl_ioctl(struct drm_device *dev, void *data,
 			struct drm_file *file_priv);
+int v3d_submit_tfu_ioctl(struct drm_device *dev, void *data,
+			 struct drm_file *file_priv);
+int v3d_submit_csd_ioctl(struct drm_device *dev, void *data,
+			 struct drm_file *file_priv);
 int v3d_wait_bo_ioctl(struct drm_device *dev, void *data,
 		      struct drm_file *file_priv);
-void v3d_exec_put(struct v3d_exec_info *exec);
+void v3d_job_put(struct v3d_job *job);
 void v3d_reset(struct v3d_dev *v3d);
 void v3d_invalidate_caches(struct v3d_dev *v3d);
-void v3d_flush_caches(struct v3d_dev *v3d);
+void v3d_clean_caches(struct v3d_dev *v3d);
 
 /* v3d_irq.c */
-void v3d_irq_init(struct v3d_dev *v3d);
+int v3d_irq_init(struct v3d_dev *v3d);
 void v3d_irq_enable(struct v3d_dev *v3d);
 void v3d_irq_disable(struct v3d_dev *v3d);
 void v3d_irq_reset(struct v3d_dev *v3d);

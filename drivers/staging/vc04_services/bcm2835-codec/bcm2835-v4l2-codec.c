@@ -1050,12 +1050,12 @@ static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 			f->fmt.pix_mp.height = MIN_H;
 
 		/*
-		 * For codecs the buffer must have a vertical alignment of 16
+		 * For decoders the buffer must have a vertical alignment of 16
 		 * lines.
 		 * The selection will reflect any cropping rectangle when only
 		 * some of the pixels are active.
 		 */
-		if (ctx->dev->role != ISP)
+		if (ctx->dev->role == DECODE)
 			f->fmt.pix_mp.height = ALIGN(f->fmt.pix_mp.height, 16);
 	}
 	f->fmt.pix_mp.num_planes = 1;
@@ -1586,6 +1586,20 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 
 		ret = bcm2835_codec_set_level_profile(ctx, ctrl);
 		break;
+
+	case V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME: {
+		u32 mmal_bool = 1;
+
+		if (!ctx->component)
+			break;
+
+		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						    &ctx->component->output[0],
+						    MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME,
+						    &mmal_bool,
+						    sizeof(mmal_bool));
+		break;
+	}
 
 	default:
 		v4l2_err(&ctx->dev->v4l2_dev, "Invalid control\n");
@@ -2311,7 +2325,7 @@ static int bcm2835_codec_open(struct file *file)
 	hdl = &ctx->hdl;
 	if (dev->role == ENCODE) {
 		/* Encode controls */
-		v4l2_ctrl_handler_init(hdl, 6);
+		v4l2_ctrl_handler_init(hdl, 7);
 
 		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
 				       V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
@@ -2355,6 +2369,9 @@ static int bcm2835_codec_open(struct file *file)
 					 BIT(V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) |
 					 BIT(V4L2_MPEG_VIDEO_H264_PROFILE_HIGH)),
 					V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
+				  0, 0, 0, 0);
 		if (hdl->error) {
 			rc = hdl->error;
 			goto free_ctrl_handler;

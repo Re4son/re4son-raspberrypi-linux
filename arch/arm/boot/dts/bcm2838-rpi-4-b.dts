@@ -5,7 +5,7 @@
 #include "bcm2838-rpi.dtsi"
 
 / {
-	compatible = "raspberrypi,4-model-b", "brcm,bcm2838";
+	compatible = "raspberrypi,4-model-b", "brcm,bcm2711";
 	model = "Raspberry Pi 4 Model B";
 
 	chosen {
@@ -13,7 +13,7 @@
 		stdout-path = "serial1:115200n8";
 	};
 
-	memory {
+	memory@0 {
 		reg = <0 0 0x40000000>;
 	};
 

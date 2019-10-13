@@ -626,9 +626,8 @@ static int mcp251x_setup(struct net_device *net, struct spi_device *spi)
 static int mcp251x_hw_reset(struct spi_device *spi)
 {
 	struct mcp251x_priv *priv = spi_get_drvdata(spi);
-	u8 reg;
+	unsigned long timeout;
 	int ret;
-	int retries = 10;
 
 	/* Wait for oscillator startup timer after power up */
 	mdelay(MCP251X_OST_DELAY_MS);
@@ -638,21 +637,22 @@ static int mcp251x_hw_reset(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	/*
-	 * Wait for oscillator startup timer after reset
-	 *
-	 * Some devices can take longer than the expected 5ms to wake
-	 * up, so allow a few retries.
-	 */
+	/* Wait for oscillator startup timer after reset */
+	mdelay(MCP251X_OST_DELAY_MS);
 
-	do {
-		mdelay(MCP251X_OST_DELAY_MS);
-		reg = mcp251x_read_reg(spi, CANSTAT);
-	} while (!reg && retries--);
+	/* Wait for reset to finish */
+	timeout = jiffies + HZ;
+	while ((mcp251x_read_reg(spi, CANSTAT) & CANCTRL_REQOP_MASK) !=
+	       CANCTRL_REQOP_CONF) {
+		usleep_range(MCP251X_OST_DELAY_MS * 1000,
+			     MCP251X_OST_DELAY_MS * 1000 * 2);
 
-	if ((reg & CANCTRL_REQOP_MASK) != CANCTRL_REQOP_CONF)
-		return -ENODEV;
-
+		if (time_after(jiffies, timeout)) {
+			dev_err(&spi->dev,
+				"MCP251x didn't enter in conf mode after reset\n");
+			return -EBUSY;
+		}
+	}
 	return 0;
 }
 

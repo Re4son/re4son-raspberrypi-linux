@@ -496,9 +496,10 @@ struct bcm2835_codec_fmt *get_default_format(struct bcm2835_codec_dev *dev,
 	return &dev->supported_fmts[capture ? 1 : 0].list[0];
 }
 
-static struct bcm2835_codec_fmt *find_format(struct v4l2_format *f,
-					     struct bcm2835_codec_dev *dev,
-					     bool capture)
+static
+struct bcm2835_codec_fmt *find_format_pix_fmt(u32 pix_fmt,
+					      struct bcm2835_codec_dev *dev,
+					      bool capture)
 {
 	struct bcm2835_codec_fmt *fmt;
 	unsigned int k;
@@ -507,13 +508,21 @@ static struct bcm2835_codec_fmt *find_format(struct v4l2_format *f,
 
 	for (k = 0; k < fmts->num_entries; k++) {
 		fmt = &fmts->list[k];
-		if (fmt->fourcc == f->fmt.pix_mp.pixelformat)
+		if (fmt->fourcc == pix_fmt)
 			break;
 	}
 	if (k == fmts->num_entries)
 		return NULL;
 
 	return &fmts->list[k];
+}
+
+static inline
+struct bcm2835_codec_fmt *find_format(struct v4l2_format *f,
+				      struct bcm2835_codec_dev *dev,
+				      bool capture)
+{
+	return find_format_pix_fmt(f->fmt.pix_mp.pixelformat, dev, capture);
 }
 
 static inline struct bcm2835_codec_ctx *file2ctx(struct file *file)
@@ -1414,6 +1423,10 @@ static int vidioc_s_parm(struct file *file, void *priv,
 	if (parm->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		return -EINVAL;
 
+	if (!parm->parm.output.timeperframe.denominator ||
+	    !parm->parm.output.timeperframe.numerator)
+		return -EINVAL;
+
 	ctx->framerate_num =
 			parm->parm.output.timeperframe.denominator;
 	ctx->framerate_denom =
@@ -1429,7 +1442,7 @@ static int vidioc_g_parm(struct file *file, void *priv,
 {
 	struct bcm2835_codec_ctx *ctx = file2ctx(file);
 
-	if (parm->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+	if (parm->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		return -EINVAL;
 
 	parm->parm.output.capability = V4L2_CAP_TIMEPERFRAME;
@@ -1792,6 +1805,36 @@ static int vidioc_encoder_cmd(struct file *file, void *priv,
 	return 0;
 }
 
+static int vidioc_enum_framesizes(struct file *file, void *fh,
+				  struct v4l2_frmsizeenum *fsize)
+{
+	struct bcm2835_codec_fmt *fmt;
+
+	fmt = find_format_pix_fmt(fsize->pixel_format, file2ctx(file)->dev,
+				  true);
+	if (!fmt)
+		fmt = find_format_pix_fmt(fsize->pixel_format,
+					  file2ctx(file)->dev,
+					  false);
+
+	if (!fmt)
+		return -EINVAL;
+
+	if (fsize->index)
+		return -EINVAL;
+
+	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+
+	fsize->stepwise.min_width = MIN_W;
+	fsize->stepwise.max_width = MAX_W;
+	fsize->stepwise.step_width = 1;
+	fsize->stepwise.min_height = MIN_H;
+	fsize->stepwise.max_height = MAX_H;
+	fsize->stepwise.step_height = 1;
+
+	return 0;
+}
+
 static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
 	.vidioc_querycap	= vidioc_querycap,
 
@@ -1829,6 +1872,7 @@ static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
 	.vidioc_try_decoder_cmd = vidioc_try_decoder_cmd,
 	.vidioc_encoder_cmd = vidioc_encoder_cmd,
 	.vidioc_try_encoder_cmd = vidioc_try_encoder_cmd,
+	.vidioc_enum_framesizes = vidioc_enum_framesizes,
 };
 
 static int bcm2835_codec_set_ctrls(struct bcm2835_codec_ctx *ctx)
@@ -2068,6 +2112,11 @@ static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
 			}
 
 			buf->mmal.dma_buf = dma_buf;
+		} else {
+			/* We already have a reference count on the dmabuf, so
+			 * release the one we acquired above.
+			 */
+			dma_buf_put(dma_buf);
 		}
 		ret = 0;
 		break;
@@ -2349,6 +2398,9 @@ static int bcm2835_codec_open(struct file *file)
 
 	ctx->colorspace = V4L2_COLORSPACE_REC709;
 	ctx->bitrate = 10 * 1000 * 1000;
+
+	ctx->framerate_num = 30;
+	ctx->framerate_denom = 1;
 
 	/* Initialise V4L2 contexts */
 	v4l2_fh_init(&ctx->fh, video_devdata(file));

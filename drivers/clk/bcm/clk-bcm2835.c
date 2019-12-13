@@ -1725,16 +1725,12 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.hold_mask = CM_PLLA_HOLDCORE,
 		.fixed_divider = 1,
 		.flags = CLK_SET_RATE_PARENT),
-	[BCM2835_PLLA_PER]	= REGISTER_PLL_DIV(
-		SOC_ALL,
-		.name = "plla_per",
-		.source_pll = "plla",
-		.cm_reg = CM_PLLA,
-		.a2w_reg = A2W_PLLA_PER,
-		.load_mask = CM_PLLA_LOADPER,
-		.hold_mask = CM_PLLA_HOLDPER,
-		.fixed_divider = 1,
-		.flags = CLK_SET_RATE_PARENT),
+
+	/*
+	 * PLLA_PER is used for gpu clocks. Controlled by firmware, see
+	 * clk-raspberrypi.c.
+	 */
+
 	[BCM2835_PLLA_DSI0]	= REGISTER_PLL_DIV(
 		SOC_ALL,
 		.name = "plla_dsi0",
@@ -1755,32 +1751,10 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.fixed_divider = 1,
 		.flags = CLK_SET_RATE_PARENT),
 
-	/* PLLB is used for the ARM's clock. */
-	[BCM2835_PLLB]		= REGISTER_PLL(
-		SOC_ALL,
-		.name = "pllb",
-		.cm_ctrl_reg = CM_PLLB,
-		.a2w_ctrl_reg = A2W_PLLB_CTRL,
-		.frac_reg = A2W_PLLB_FRAC,
-		.ana_reg_base = A2W_PLLB_ANA0,
-		.reference_enable_mask = A2W_XOSC_CTRL_PLLB_ENABLE,
-		.lock_mask = CM_LOCK_FLOCKB,
-
-		.ana = &bcm2835_ana_default,
-
-		.min_rate = 600000000u,
-		.max_rate = 3000000000u,
-		.max_fb_rate = BCM2835_MAX_FB_RATE),
-	[BCM2835_PLLB_ARM]	= REGISTER_PLL_DIV(
-		SOC_ALL,
-		.name = "pllb_arm",
-		.source_pll = "pllb",
-		.cm_reg = CM_PLLB,
-		.a2w_reg = A2W_PLLB_ARM,
-		.load_mask = CM_PLLB_LOADARM,
-		.hold_mask = CM_PLLB_HOLDARM,
-		.fixed_divider = 1,
-		.flags = CLK_SET_RATE_PARENT),
+	/*
+	 * PLLB is used for the ARM's clock. Controlled by firmware, see
+	 * clk-raspberrypi.c.
+	 */
 
 	/*
 	 * PLLC is the core PLL, used to drive the core VPU clock.
@@ -2029,14 +2003,12 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.int_bits = 6,
 		.frac_bits = 0,
 		.tcnt_mux = 3),
-	[BCM2835_CLOCK_V3D]	= REGISTER_VPU_CLK(
-		SOC_ALL,
-		.name = "v3d",
-		.ctl_reg = CM_V3DCTL,
-		.div_reg = CM_V3DDIV,
-		.int_bits = 4,
-		.frac_bits = 8,
-		.tcnt_mux = 4),
+
+	/*
+	 * CLOCK_V3D is used for v3d clock. Controlled by firmware, see
+	 * clk-raspberrypi.c.
+	 */
+
 	/*
 	 * VPU clock.  This doesn't have an enable bit, since it drives
 	 * the bus for everything else, and is special so it doesn't need
@@ -2288,9 +2260,11 @@ static bool bcm2835_clk_is_claimed(const char *name)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(clk_desc_array); i++) {
-		const char *clk_name = *(const char **)(clk_desc_array[i].data);
-		if (!strcmp(name, clk_name))
-		    return bcm2835_clk_claimed[i];
+		if (clk_desc_array[i].data) {
+			const char *clk_name = *(const char **)(clk_desc_array[i].data);
+			if (!strcmp(name, clk_name))
+				return bcm2835_clk_claimed[i];
+		}
 	}
 
 	return false;

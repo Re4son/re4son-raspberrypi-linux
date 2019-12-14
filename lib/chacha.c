@@ -16,9 +16,8 @@
 #include <asm/unaligned.h>
 #include <crypto/chacha.h>
 
-void chacha20_block(u32 *state, u8 *stream)
+static void chacha_permute(u32 *x, int nrounds)
 {
-	u32 x[16];
 	int i;
 
 	/* whitelist the allowed round counts */

@@ -15,6 +15,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	allo-katana-dac-audio.dtbo \
 	allo-piano-dac-pcm512x-audio.dtbo \
 	allo-piano-dac-plus-pcm512x-audio.dtbo \
+	anyspi.dtbo \
 	apds9960.dtbo \
 	applepi-dac.dtbo \
 	at86rf233.dtbo \
@@ -56,6 +57,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	hifiberry-dacplusadc.dtbo \
 	hifiberry-dacplusadcpro.dtbo \
 	hifiberry-dacplusdsp.dtbo \
+	hifiberry-dacplushd.dtbo \
 	hifiberry-digi.dtbo \
 	hifiberry-digi-pro.dtbo \
 	hy28a.dtbo \

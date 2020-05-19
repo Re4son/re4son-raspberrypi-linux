@@ -10,6 +10,11 @@
 	compatible = "raspberrypi,model-b-plus", "brcm,bcm2835";
 	model = "Raspberry Pi Model B+";
 
+	memory@0 {
+		device_type = "memory";
+		reg = <0 0x20000000>;
+	};
+
 	leds {
 		act {
 			gpios = <&gpio 47 GPIO_ACTIVE_HIGH>;
@@ -34,8 +39,8 @@
 	 * "FOO" = GPIO line named "FOO" on the schematic
 	 * "FOO_N" = GPIO line named "FOO" on schematic, active low
 	 */
-	gpio-line-names = "SDA0",
-			  "SCL0",
+	gpio-line-names = "ID_SDA",
+			  "ID_SCL",
 			  "SDA1",
 			  "SCL1",
 			  "GPIO_GCLK",
@@ -123,4 +128,9 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_gpio14>;
 	status = "okay";
+};
+
+/* i2c on camera/display connector is gpio 28&29 */
+&i2c0mux {
+	pinctrl-1 = <&i2c0_gpio28>;
 };

@@ -5,7 +5,7 @@
 # Copyright (C) 1995-2000 Russell King
 #
 
-lib-y		:= backtrace.o changebit.o csumipv6.o csumpartial.o   \
+lib-y		:= changebit.o csumipv6.o csumpartial.o               \
 		   csumpartialcopy.o csumpartialcopyuser.o clearbit.o \
 		   delay.o delay-loop.o findbit.o memchr.o            \
 		   setbit.o                                           \
@@ -18,6 +18,12 @@ lib-y		:= backtrace.o changebit.o csumipv6.o csumpartial.o   \
 
 mmu-y		:= clear_user.o copy_page.o getuser.o putuser.o       \
 		   copy_from_user.o copy_to_user.o
+
+ifdef CONFIG_CC_IS_CLANG
+  lib-y	+= backtrace-clang.o
+else
+  lib-y	+= backtrace.o
+endif
 
 # Choose optimised implementations for Raspberry Pi
 ifeq ($(CONFIG_BCM2835_FAST_MEMCPY),y)
@@ -41,7 +47,6 @@ else
 endif
 
 ifeq ($(CONFIG_ARCH_RPC),y)
-  lib-y				+= ecard.o io-acorn.o floppydma.o
   AFLAGS_delay-loop.o		+= -march=armv4
 endif
 

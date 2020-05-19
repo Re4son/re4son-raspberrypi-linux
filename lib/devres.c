@@ -9,6 +9,7 @@
 enum devm_ioremap_type {
 	DEVM_IOREMAP = 0,
 	DEVM_IOREMAP_NC,
+	DEVM_IOREMAP_UC,
 	DEVM_IOREMAP_WC,
 };
 
@@ -39,6 +40,9 @@ static void __iomem *__devm_ioremap(struct device *dev, resource_size_t offset,
 	case DEVM_IOREMAP_NC:
 		addr = ioremap_nocache(offset, size);
 		break;
+	case DEVM_IOREMAP_UC:
+		addr = ioremap_uc(offset, size);
+		break;
 	case DEVM_IOREMAP_WC:
 		addr = ioremap_wc(offset, size);
 		break;
@@ -67,6 +71,21 @@ void __iomem *devm_ioremap(struct device *dev, resource_size_t offset,
 	return __devm_ioremap(dev, offset, size, DEVM_IOREMAP);
 }
 EXPORT_SYMBOL(devm_ioremap);
+
+/**
+ * devm_ioremap_uc - Managed ioremap_uc()
+ * @dev: Generic device to remap IO address for
+ * @offset: Resource address to map
+ * @size: Size of map
+ *
+ * Managed ioremap_uc().  Map is automatically unmapped on driver detach.
+ */
+void __iomem *devm_ioremap_uc(struct device *dev, resource_size_t offset,
+			      resource_size_t size)
+{
+	return __devm_ioremap(dev, offset, size, DEVM_IOREMAP_UC);
+}
+EXPORT_SYMBOL_GPL(devm_ioremap_uc);
 
 /**
  * devm_ioremap_nocache - Managed ioremap_nocache()
@@ -135,7 +154,6 @@ void __iomem *devm_ioremap_resource(struct device *dev,
 				    const struct resource *res)
 {
 	resource_size_t size;
-	const char *name;
 	void __iomem *dest_ptr;
 
 	BUG_ON(!dev);
@@ -146,9 +164,8 @@ void __iomem *devm_ioremap_resource(struct device *dev,
 	}
 
 	size = resource_size(res);
-	name = res->name ?: dev_name(dev);
 
-	if (!devm_request_mem_region(dev, res->start, size, name)) {
+	if (!devm_request_mem_region(dev, res->start, size, dev_name(dev))) {
 		dev_err(dev, "can't request region for resource %pR\n", res);
 		return IOMEM_ERR_PTR(-EBUSY);
 	}

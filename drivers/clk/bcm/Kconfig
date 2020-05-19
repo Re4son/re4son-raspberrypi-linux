@@ -1,3 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config CLK_BCM2835
+	bool "Broadcom BCM2835 clock support"
+	depends on ARCH_BCM2835 || ARCH_BRCMSTB || COMPILE_TEST
+	depends on COMMON_CLK
+	default ARCH_BCM2835 || ARCH_BRCMSTB
+	select RESET_SIMPLE
+	help
+	  Enable common clock framework support for Broadcom BCM2835
+	  SoCs.
+
 config CLK_BCM_63XX
 	bool "Broadcom BCM63xx clock support"
 	depends on ARCH_BCM_63XX || COMPILE_TEST
@@ -6,6 +17,14 @@ config CLK_BCM_63XX
 	help
 	  Enable common clock framework support for Broadcom BCM63xx DSL SoCs
 	  based on the ARM architecture
+
+config CLK_BCM_63XX_GATE
+	bool "Broadcom BCM63xx gated clock support"
+	depends on BMIPS_GENERIC || COMPILE_TEST
+	default BMIPS_GENERIC
+	help
+	  Enable common clock framework support for Broadcom BCM63xx DSL SoCs
+	  based on the MIPS architecture
 
 config CLK_BCM_KONA
 	bool "Broadcom Kona CCU clock support"

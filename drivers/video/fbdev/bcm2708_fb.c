@@ -32,7 +32,6 @@
 #include <linux/printk.h>
 #include <linux/console.h>
 #include <linux/debugfs.h>
-#include <asm/sizes.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
@@ -112,6 +111,9 @@ struct bcm2708_fb {
 	struct vc4_display_settings_t display_settings;
 	struct debugfs_regset32 screeninfo_regset;
 	struct bcm2708_fb_dev *fbdev;
+	unsigned int image_size;
+	dma_addr_t dma_addr;
+	void *cpuaddr;
 };
 
 #define MAX_FRAMEBUFFERS 3
@@ -374,12 +376,11 @@ static int bcm2708_fb_set_par(struct fb_info *info)
 			.xoffset = info->var.xoffset,
 			.yoffset = info->var.yoffset,
 		.tag5 = { RPI_FIRMWARE_FRAMEBUFFER_ALLOCATE, 8, 0 },
-			.base = 0,
-			.screen_size = 0,
-		.tag6 = { RPI_FIRMWARE_FRAMEBUFFER_GET_PITCH, 4, 0 },
-			.pitch = 0,
+			/* base and screen_size will be initialised later */
+		.tag6 = { RPI_FIRMWARE_FRAMEBUFFER_SET_PITCH, 4, 0 },
+			/* pitch will be initialised later */
 	};
-	int ret;
+	int ret, image_size;
 
 	print_debug("%s(%p) %dx%d (%dx%d), %d, %d (display %d)\n", __func__,
 		    info,
@@ -394,12 +395,76 @@ static int bcm2708_fb_set_par(struct fb_info *info)
 	 */
 	set_display_num(fb);
 
-	ret = rpi_firmware_property_list(fb->fbdev->fw, &fbinfo,
-					 sizeof(fbinfo));
+	/* Try allocating our own buffer. We can specify all the parameters */
+	image_size = ((info->var.xres * info->var.yres) *
+		      info->var.bits_per_pixel) >> 3;
+
+	if (!fb->fbdev->disable_arm_alloc &&
+	    (image_size != fb->image_size || !fb->dma_addr)) {
+		if (fb->dma_addr) {
+			dma_free_coherent(info->device, fb->image_size,
+					  fb->cpuaddr, fb->dma_addr);
+			fb->image_size = 0;
+			fb->cpuaddr = NULL;
+			fb->dma_addr = 0;
+		}
+
+		fb->cpuaddr = dma_alloc_coherent(info->device, image_size,
+						 &fb->dma_addr, GFP_KERNEL);
+
+		if (!fb->cpuaddr) {
+			fb->dma_addr = 0;
+			fb->fbdev->disable_arm_alloc = true;
+		} else {
+			fb->image_size = image_size;
+		}
+	}
+
+	if (fb->cpuaddr) {
+		fbinfo.base = fb->dma_addr;
+		fbinfo.screen_size = image_size;
+		fbinfo.pitch = (info->var.xres * info->var.bits_per_pixel) >> 3;
+
+		ret = rpi_firmware_property_list(fb->fbdev->fw, &fbinfo,
+						 sizeof(fbinfo));
+		if (ret || fbinfo.base != fb->dma_addr) {
+			/* Firmware either failed, or assigned a different base
+			 * address (ie it doesn't support being passed an FB
+			 * allocation).
+			 * Destroy the allocation, and don't try again.
+			 */
+			dma_free_coherent(info->device, fb->image_size,
+					  fb->cpuaddr, fb->dma_addr);
+			fb->image_size = 0;
+			fb->cpuaddr = NULL;
+			fb->dma_addr = 0;
+			fb->fbdev->disable_arm_alloc = true;
+		}
+	} else {
+		/* Our allocation failed - drop into the old scheme of
+		 * allocation by the VPU.
+		 */
+		ret = -ENOMEM;
+	}
+
 	if (ret) {
-		dev_err(info->device,
-			"Failed to allocate GPU framebuffer (%d)\n", ret);
-		return ret;
+		/* Old scheme:
+		 * - FRAMEBUFFER_ALLOCATE passes 0 for base and screen_size.
+		 * - GET_PITCH instead of SET_PITCH.
+		 */
+		fbinfo.base = 0;
+		fbinfo.screen_size = 0;
+		fbinfo.tag6.tag = RPI_FIRMWARE_FRAMEBUFFER_GET_PITCH;
+		fbinfo.pitch = 0;
+
+		ret = rpi_firmware_property_list(fb->fbdev->fw, &fbinfo,
+						 sizeof(fbinfo));
+		if (ret) {
+			dev_err(info->device,
+				"Failed to allocate GPU framebuffer (%d)\n",
+				ret);
+			return ret;
+		}
 	}
 
 	if (info->var.bits_per_pixel <= 8)
@@ -414,9 +479,17 @@ static int bcm2708_fb_set_par(struct fb_info *info)
 	fb->fb.fix.smem_start = fbinfo.base;
 	fb->fb.fix.smem_len = fbinfo.pitch * fbinfo.yres_virtual;
 	fb->fb.screen_size = fbinfo.screen_size;
-	if (fb->fb.screen_base)
-		iounmap(fb->fb.screen_base);
-	fb->fb.screen_base = ioremap_wc(fbinfo.base, fb->fb.screen_size);
+
+	if (!fb->dma_addr) {
+		if (fb->fb.screen_base)
+			iounmap(fb->fb.screen_base);
+
+		fb->fb.screen_base = ioremap_wc(fbinfo.base,
+						fb->fb.screen_size);
+	} else {
+		fb->fb.screen_base = fb->cpuaddr;
+	}
+
 	if (!fb->fb.screen_base) {
 		/* the console may currently be locked */
 		console_trylock();
@@ -1031,10 +1104,9 @@ static int bcm2708_fb_probe(struct platform_device *dev)
 	 * set one display
 	 */
 	if (ret || num_displays == 0) {
-		num_displays = 1;
 		dev_err(&dev->dev,
-			"Unable to determine number of FB's. Assuming 1\n");
-		ret = 0;
+			"Unable to determine number of FBs. Disabling driver.\n");
+		return -ENOENT;
 	} else {
 		fbdev->firmware_supports_multifb = 1;
 	}
@@ -1055,7 +1127,7 @@ static int bcm2708_fb_probe(struct platform_device *dev)
 
 	mutex_init(&fbdev->dma_mutex);
 
-	fbdev->cb_base = dma_alloc_writecombine(&dev->dev, SZ_64K,
+	fbdev->cb_base = dma_alloc_wc(&dev->dev, SZ_64K,
 						&fbdev->cb_handle,
 						GFP_KERNEL);
 	if (!fbdev->cb_base) {
@@ -1134,7 +1206,7 @@ static int bcm2708_fb_probe(struct platform_device *dev)
 free_dma_chan:
 	bcm_dma_chan_free(fbdev->dma_chan);
 free_cb:
-	dma_free_writecombine(&dev->dev, SZ_64K, fbdev->cb_base,
+	dma_free_wc(&dev->dev, SZ_64K, fbdev->cb_base,
 			      fbdev->cb_handle);
 free_fb:
 	dev_err(&dev->dev, "probe failed, err %d\n", ret);
@@ -1159,7 +1231,7 @@ static int bcm2708_fb_remove(struct platform_device *dev)
 		}
 	}
 
-	dma_free_writecombine(&dev->dev, SZ_64K, fbdev->cb_base,
+	dma_free_wc(&dev->dev, SZ_64K, fbdev->cb_base,
 			      fbdev->cb_handle);
 	bcm_dma_chan_free(fbdev->dma_chan);
 	free_irq(fbdev->dma_irq, fbdev);

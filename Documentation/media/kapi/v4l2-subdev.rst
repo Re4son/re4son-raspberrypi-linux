@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: GPL-2.0
+
 V4L2 sub-devices
 ----------------
 
@@ -21,7 +23,7 @@ device data.
 
 You also need a way to go from the low-level struct to :c:type:`v4l2_subdev`.
 For the common i2c_client struct the i2c_set_clientdata() call is used to store
-a :c:type:`v4l2_subdev` pointer, for other busses you may have to use other
+a :c:type:`v4l2_subdev` pointer, for other buses you may have to use other
 methods.
 
 Bridges might also need to store per-subdev private data, such as a pointer to
@@ -31,7 +33,7 @@ provides host private data for that purpose that can be accessed with
 
 From the bridge driver perspective, you load the sub-device module and somehow
 obtain the :c:type:`v4l2_subdev` pointer. For i2c devices this is easy: you call
-``i2c_get_clientdata()``. For other busses something similar needs to be done.
+``i2c_get_clientdata()``. For other buses something similar needs to be done.
 Helper functions exists for sub-devices on an I2C bus that do most of this
 tricky work for you.
 
@@ -247,26 +249,39 @@ performed using the :c:func:`v4l2_async_unregister_subdev` call. Subdevices
 registered this way are stored in a global list of subdevices, ready to be
 picked up by bridge drivers.
 
-Bridge drivers in turn have to register a notifier object with an array of
-subdevice descriptors that the bridge device needs for its operation. This is
+Bridge drivers in turn have to register a notifier object. This is
 performed using the :c:func:`v4l2_async_notifier_register` call. To
 unregister the notifier the driver has to call
 :c:func:`v4l2_async_notifier_unregister`. The former of the two functions
-takes two arguments: a pointer to struct :c:type:`v4l2_device` and a pointer to
-struct :c:type:`v4l2_async_notifier`. The latter contains a pointer to an array
-of pointers to subdevice descriptors of type struct :c:type:`v4l2_async_subdev`
-type. The V4L2 core will then use these descriptors to match asynchronously
-registered
-subdevices to them. If a match is detected the ``.bound()`` notifier callback
-is called. After all subdevices have been located the .complete() callback is
-called. When a subdevice is removed from the system the .unbind() method is
-called. All three callbacks are optional.
+takes two arguments: a pointer to struct :c:type:`v4l2_device` and a
+pointer to struct :c:type:`v4l2_async_notifier`.
+
+Before registering the notifier, bridge drivers must do two things:
+first, the notifier must be initialized using the
+:c:func:`v4l2_async_notifier_init`. Second, bridge drivers can then
+begin to form a list of subdevice descriptors that the bridge device
+needs for its operation. Subdevice descriptors are added to the notifier
+using the :c:func:`v4l2_async_notifier_add_subdev` call. This function
+takes two arguments: a pointer to struct :c:type:`v4l2_async_notifier`,
+and a pointer to the subdevice descripter, which is of type struct
+:c:type:`v4l2_async_subdev`.
+
+The V4L2 core will then use these descriptors to match asynchronously
+registered subdevices to them. If a match is detected the ``.bound()``
+notifier callback is called. After all subdevices have been located the
+.complete() callback is called. When a subdevice is removed from the
+system the .unbind() method is called. All three callbacks are optional.
 
 V4L2 sub-device userspace API
 -----------------------------
 
-Beside exposing a kernel API through the :c:type:`v4l2_subdev_ops` structure,
-V4L2 sub-devices can also be controlled directly by userspace applications.
+Bridge drivers traditionally expose one or multiple video nodes to userspace,
+and control subdevices through the :c:type:`v4l2_subdev_ops` operations in
+response to video node operations. This hides the complexity of the underlying
+hardware from applications. For complex devices, finer-grained control of the
+device than what the video nodes offer may be required. In those cases, bridge
+drivers that implement :ref:`the media controller API <media_controller>` may
+opt for making the subdevice operations directly accessible from userpace.
 
 Device nodes named ``v4l-subdev``\ *X* can be created in ``/dev`` to access
 sub-devices directly. If a sub-device supports direct userspace configuration
@@ -317,6 +332,50 @@ Private ioctls
 	All ioctls not in the above list are passed directly to the sub-device
 	driver through the core::ioctl operation.
 
+Read-only sub-device userspace API
+----------------------------------
+
+Bridge drivers that control their connected subdevices through direct calls to
+the kernel API realized by :c:type:`v4l2_subdev_ops` structure do not usually
+want userspace to be able to change the same parameters through the subdevice
+device node and thus do not usually register any.
+
+It is sometimes useful to report to userspace the current subdevice
+configuration through a read-only API, that does not permit applications to
+change to the device parameters but allows interfacing to the subdevice device
+node to inspect them.
+
+For instance, to implement cameras based on computational photography, userspace
+needs to know the detailed camera sensor configuration (in terms of skipping,
+binning, cropping and scaling) for each supported output resolution. To support
+such use cases, bridge drivers may expose the subdevice operations to userspace
+through a read-only API.
+
+To create a read-only device node for all the subdevices registered with the
+``V4L2_SUBDEV_FL_HAS_DEVNODE`` set, the :c:type:`v4l2_device` driver should call
+:c:func:`v4l2_device_register_ro_subdev_nodes`.
+
+Access to the following ioctls for userspace applications is restricted on
+sub-device device nodes registered with
+:c:func:`v4l2_device_register_ro_subdev_nodes`.
+
+``VIDIOC_SUBDEV_S_FMT``,
+``VIDIOC_SUBDEV_S_CROP``,
+``VIDIOC_SUBDEV_S_SELECTION``:
+
+	These ioctls are only allowed on a read-only subdevice device node
+	for the :ref:`V4L2_SUBDEV_FORMAT_TRY <v4l2-subdev-format-whence>`
+	formats and selection rectangles.
+
+``VIDIOC_SUBDEV_S_FRAME_INTERVAL``,
+``VIDIOC_SUBDEV_S_DV_TIMINGS``,
+``VIDIOC_SUBDEV_S_STD``:
+
+	These ioctls are not allowed on a read-only subdevice node.
+
+In case the ioctl is not allowed, or the format to modify is set to
+``V4L2_SUBDEV_FORMAT_ACTIVE``, the core returns a negative error code and
+the errno variable is set to ``-EPERM``.
 
 I2C sub-device drivers
 ----------------------

@@ -173,29 +173,21 @@ static struct snd_soc_ops snd_rpi_justboom_both_ops = {
 	.shutdown  = snd_rpi_justboom_both_shutdown,
 };
 
-static struct snd_soc_dai_link_component justboom_both_codecs[] = {
-{
-	.dai_name = "wm8804-spdif",
-	.name     = "wm8804.1-003b",
-},
-{
-	.dai_name = "pcm512x-hifi",
-	.name     = "pcm512x.1-004d",
-},
-};
+SND_SOC_DAILINK_DEFS(rpi_justboom_both,
+	DAILINK_COMP_ARRAY(COMP_CPU("bcm2708-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("pcm512x.1-004d", "pcm512x-hifi"),
+			   COMP_CODEC("wm8804.1-003b", "wm8804-spdif")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("bcm2708-i2s.0")));
 
 static struct snd_soc_dai_link snd_rpi_justboom_both_dai[] = {
 {
 	.name           = "JustBoom Digi",
 	.stream_name    = "JustBoom Digi HiFi",
-	.cpu_dai_name   = "bcm2708-i2s.0",
-	.platform_name  = "bcm2708-i2s.0",
-	.codecs         = justboom_both_codecs,
-	.num_codecs     = ARRAY_SIZE(justboom_both_codecs),
 	.dai_fmt        = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 					SND_SOC_DAIFMT_CBM_CFM,
 	.ops            = &snd_rpi_justboom_both_ops,
 	.init           = snd_rpi_justboom_both_init,
+	SND_SOC_DAILINK_REG(rpi_justboom_both),
 },
 };
 
@@ -211,6 +203,7 @@ static struct snd_soc_card snd_rpi_justboom_both = {
 static int snd_rpi_justboom_both_probe(struct platform_device *pdev)
 {
 	int ret = 0;
+	struct snd_soc_card *card = &snd_rpi_justboom_both;
 
 	snd_rpi_justboom_both.dev = &pdev->dev;
 
@@ -219,20 +212,24 @@ static int snd_rpi_justboom_both_probe(struct platform_device *pdev)
 		struct snd_soc_dai_link *dai = &snd_rpi_justboom_both_dai[0];
 
 		i2s_node = of_parse_phandle(pdev->dev.of_node,
-					"i2s-controller", 0);
+					    "i2s-controller", 0);
 
 		if (i2s_node) {
-			dai->cpu_dai_name = NULL;
-			dai->cpu_of_node = i2s_node;
-			dai->platform_name = NULL;
-			dai->platform_of_node = i2s_node;
+			int i;
+
+			for (i = 0; i < card->num_links; i++) {
+				dai->cpus->dai_name = NULL;
+				dai->cpus->of_node = i2s_node;
+				dai->platforms->name = NULL;
+				dai->platforms->of_node = i2s_node;
+			}
 		}
 
 		digital_gain_0db_limit = !of_property_read_bool(
 			pdev->dev.of_node, "justboom,24db_digital_gain");
 	}
 
-	ret = snd_soc_register_card(&snd_rpi_justboom_both);
+	ret = snd_soc_register_card(card);
 	if (ret && ret != -EPROBE_DEFER) {
 		dev_err(&pdev->dev,
 			"snd_soc_register_card() failed: %d\n", ret);

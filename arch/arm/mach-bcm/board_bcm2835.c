@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2010 Broadcom
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/init.h>
@@ -126,11 +117,25 @@ static const char * const bcm2835_compat[] = {
 };
 
 DT_MACHINE_START(BCM2835, "BCM2835")
+	.map_io = bcm2835_map_io,
+	.init_machine = bcm2835_init,
+	.dt_compat = bcm2835_compat,
+	.smp = smp_ops(bcm2836_smp_ops),
+MACHINE_END
+
+static const char * const bcm2711_compat[] = {
+#ifdef CONFIG_ARCH_MULTI_V7
+	"brcm,bcm2711",
+#endif
+	NULL
+};
+
+DT_MACHINE_START(BCM2711, "BCM2711")
 #if defined(CONFIG_ZONE_DMA) && defined(CONFIG_ARM_LPAE)
 	.dma_zone_size	= SZ_1G,
 #endif
 	.map_io = bcm2835_map_io,
 	.init_machine = bcm2835_init,
-	.dt_compat = bcm2835_compat,
+	.dt_compat = bcm2711_compat,
 	.smp = smp_ops(bcm2836_smp_ops),
 MACHINE_END

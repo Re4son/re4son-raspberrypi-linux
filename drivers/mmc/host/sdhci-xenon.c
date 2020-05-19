@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for Marvell Xenon SDHC as a platform device
  *
@@ -5,10 +6,6 @@
  *
  * Author:	Hu Ziji <huziji@marvell.com>
  * Date:	2016-8-24
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
  *
  * Inspired by Jisheng Zhang <jszhang@marvell.com>
  * Special thanks to Video BG4 project team.
@@ -238,6 +235,16 @@ static void xenon_voltage_switch(struct sdhci_host *host)
 {
 	/* Wait for 5ms after set 1.8V signal enable bit */
 	usleep_range(5000, 5500);
+
+	/*
+	 * For some reason the controller's Host Control2 register reports
+	 * the bit representing 1.8V signaling as 0 when read after it was
+	 * written as 1. Subsequent read reports 1.
+	 *
+	 * Since this may cause some issues, do an empty read of the Host
+	 * Control2 register here to circumvent this.
+	 */
+	sdhci_readw(host, SDHCI_HOST_CONTROL2);
 }
 
 static const struct sdhci_ops sdhci_xenon_ops = {
@@ -641,7 +648,7 @@ static int xenon_runtime_resume(struct device *dev)
 		priv->restore_needed = false;
 	}
 
-	ret = sdhci_runtime_resume_host(host);
+	ret = sdhci_runtime_resume_host(host, 0);
 	if (ret)
 		goto out;
 	return 0;

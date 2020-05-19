@@ -13,6 +13,8 @@
  * current job can make progress.
  */
 
+#include <linux/platform_device.h>
+
 #include "v3d_drv.h"
 #include "v3d_regs.h"
 #include "v3d_trace.h"
@@ -38,12 +40,14 @@ v3d_overflow_mem_work(struct work_struct *work)
 		container_of(work, struct v3d_dev, overflow_mem_work);
 	struct drm_device *dev = &v3d->drm;
 	struct v3d_bo *bo = v3d_bo_create(dev, NULL /* XXX: GMP */, 256 * 1024);
+	struct drm_gem_object *obj;
 	unsigned long irqflags;
 
 	if (IS_ERR(bo)) {
 		DRM_ERROR("Couldn't allocate binner overflow mem\n");
 		return;
 	}
+	obj = &bo->base.base;
 
 	/* We lost a race, and our work task came in after the bin job
 	 * completed and exited.  This can happen because the HW
@@ -60,15 +64,15 @@ v3d_overflow_mem_work(struct work_struct *work)
 		goto out;
 	}
 
-	drm_gem_object_get(&bo->base);
+	drm_gem_object_get(obj);
 	list_add_tail(&bo->unref_head, &v3d->bin_job->render->unref_list);
 	spin_unlock_irqrestore(&v3d->job_lock, irqflags);
 
 	V3D_CORE_WRITE(0, V3D_PTB_BPOA, bo->node.start << PAGE_SHIFT);
-	V3D_CORE_WRITE(0, V3D_PTB_BPOS, bo->base.size);
+	V3D_CORE_WRITE(0, V3D_PTB_BPOS, obj->size);
 
 out:
-	drm_gem_object_put_unlocked(&bo->base);
+	drm_gem_object_put_unlocked(obj);
 }
 
 static irqreturn_t
@@ -86,7 +90,8 @@ v3d_irq(int irq, void *arg)
 	if (intsts & V3D_INT_OUTOMEM) {
 		/* Note that the OOM status is edge signaled, so the
 		 * interrupt won't happen again until the we actually
-		 * add more memory.
+		 * add more memory.  Also, as of V3D 4.1, FLDONE won't
+		 * be reported until any OOM state has been cleared.
 		 */
 		schedule_work(&v3d->overflow_mem_work);
 		status = IRQ_HANDLED;
@@ -159,16 +164,39 @@ v3d_hub_irq(int irq, void *arg)
 		      V3D_HUB_INT_MMU_PTI |
 		      V3D_HUB_INT_MMU_CAP)) {
 		u32 axi_id = V3D_READ(V3D_MMU_VIO_ID);
-		u64 vio_addr = (u64)V3D_READ(V3D_MMU_VIO_ADDR) << 8;
+		u64 vio_addr = ((u64)V3D_READ(V3D_MMU_VIO_ADDR) <<
+				(v3d->va_width - 32));
+		static const char *const v3d41_axi_ids[] = {
+			"L2T",
+			"PTB",
+			"PSE",
+			"TLB",
+			"CLE",
+			"TFU",
+			"MMU",
+			"GMP",
+		};
+		const char *client = "?";
+		static int logged_error;
 
-		dev_err(v3d->dev, "MMU error from client %d at 0x%08llx%s%s%s\n",
-			axi_id, (long long)vio_addr,
+		V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL));
+
+		if (v3d->ver >= 41) {
+			axi_id = axi_id >> 5;
+			if (axi_id < ARRAY_SIZE(v3d41_axi_ids))
+				client = v3d41_axi_ids[axi_id];
+		}
+
+		if (!logged_error)
+		dev_err(v3d->dev, "MMU error from client %s (%d) at 0x%llx%s%s%s\n",
+			client, axi_id, (long long)vio_addr,
 			((intsts & V3D_HUB_INT_MMU_WRV) ?
 			 ", write violation" : ""),
 			((intsts & V3D_HUB_INT_MMU_PTI) ?
 			 ", pte invalid" : ""),
 			((intsts & V3D_HUB_INT_MMU_CAP) ?
 			 ", cap exceeded" : ""));
+		logged_error = 1;
 		status = IRQ_HANDLED;
 	}
 
@@ -189,7 +217,7 @@ v3d_irq_init(struct v3d_dev *v3d)
 		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS);
 	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS);
 
-	irq1 = platform_get_irq(v3d->pdev, 1);
+	irq1 = platform_get_irq_optional(v3d->pdev, 1);
 	if (irq1 == -EPROBE_DEFER)
 		return irq1;
 	if (irq1 > 0) {

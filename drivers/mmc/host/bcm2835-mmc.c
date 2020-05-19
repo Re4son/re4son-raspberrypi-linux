@@ -104,8 +104,6 @@ struct bcm2835_host {
 
 	wait_queue_head_t		buf_ready_int;		/* Waitqueue for Buffer Read Ready interrupt */
 
-	u32						thread_isr;
-
 	u32						shadow;
 
 	/*DMA part*/
@@ -849,7 +847,6 @@ static void bcm2835_mmc_timeout_timer(struct timer_list *t)
 		}
 	}
 
-	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
@@ -864,7 +861,6 @@ static void bcm2835_mmc_enable_sdio_irq_nolock(struct bcm2835_host *host, int en
 
 		bcm2835_mmc_writel(host, host->ier, SDHCI_INT_ENABLE, 7);
 		bcm2835_mmc_writel(host, host->ier, SDHCI_SIGNAL_ENABLE, 7);
-		mmiowb();
 	}
 }
 
@@ -1022,8 +1018,7 @@ static irqreturn_t bcm2835_mmc_irq(int irq, void *dev_id)
 
 		if (intmask & SDHCI_INT_CARD_INT) {
 			bcm2835_mmc_enable_sdio_irq_nolock(host, false);
-			host->thread_isr |= SDHCI_INT_CARD_INT;
-			result = IRQ_WAKE_THREAD;
+			sdio_signal_irq(host->mmc);
 		}
 
 		intmask &= ~(SDHCI_INT_CARD_INSERT | SDHCI_INT_CARD_REMOVE |
@@ -1053,30 +1048,17 @@ out:
 	return result;
 }
 
-static irqreturn_t bcm2835_mmc_thread_irq(int irq, void *dev_id)
+
+static void bcm2835_mmc_ack_sdio_irq(struct mmc_host *mmc)
 {
-	struct bcm2835_host *host = dev_id;
+	struct bcm2835_host *host = mmc_priv(mmc);
 	unsigned long flags;
-	u32 isr;
 
 	spin_lock_irqsave(&host->lock, flags);
-	isr = host->thread_isr;
-	host->thread_isr = 0;
+	if (host->flags & SDHCI_SDIO_IRQ_ENABLED)
+		bcm2835_mmc_enable_sdio_irq_nolock(host, true);
 	spin_unlock_irqrestore(&host->lock, flags);
-
-	if (isr & SDHCI_INT_CARD_INT) {
-		sdio_run_irqs(host->mmc);
-
-		spin_lock_irqsave(&host->lock, flags);
-		if (host->flags & SDHCI_SDIO_IRQ_ENABLED)
-			bcm2835_mmc_enable_sdio_irq_nolock(host, true);
-		spin_unlock_irqrestore(&host->lock, flags);
-	}
-
-	return isr ? IRQ_HANDLED : IRQ_NONE;
 }
-
-
 
 void bcm2835_mmc_set_clock(struct bcm2835_host *host, unsigned int clock)
 {
@@ -1167,7 +1149,6 @@ static void bcm2835_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	else
 		bcm2835_mmc_send_command(host, mrq->cmd);
 
-	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	if (!(mrq->sbc && !(host->flags & SDHCI_AUTO_CMD23)) && mrq->cmd->data && host->use_dma) {
@@ -1236,8 +1217,6 @@ static void bcm2835_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	bcm2835_mmc_set_clock(host, host->clock);
 	bcm2835_mmc_writeb(host, ctrl, SDHCI_HOST_CONTROL);
 
-	mmiowb();
-
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
@@ -1246,6 +1225,7 @@ static struct mmc_host_ops bcm2835_ops = {
 	.request = bcm2835_mmc_request,
 	.set_ios = bcm2835_mmc_set_ios,
 	.enable_sdio_irq = bcm2835_mmc_enable_sdio_irq,
+	.ack_sdio_irq = bcm2835_mmc_ack_sdio_irq,
 };
 
 
@@ -1290,8 +1270,6 @@ static void bcm2835_mmc_tasklet_finish(unsigned long param)
 	host->mrq = NULL;
 	host->cmd = NULL;
 	host->data = NULL;
-
-	mmiowb();
 
 	spin_unlock_irqrestore(&host->lock, flags);
 	mmc_request_done(host->mmc, mrq);
@@ -1396,15 +1374,13 @@ static int bcm2835_mmc_add_host(struct bcm2835_host *host)
 	init_waitqueue_head(&host->buf_ready_int);
 
 	bcm2835_mmc_init(host, 0);
-	ret = request_threaded_irq(host->irq, bcm2835_mmc_irq,
-				   bcm2835_mmc_thread_irq, IRQF_SHARED,
+	ret = request_irq(host->irq, bcm2835_mmc_irq, IRQF_SHARED,
 				   mmc_hostname(mmc), host);
 	if (ret) {
 		dev_err(dev, "Failed to request IRQ %d: %d\n", host->irq, ret);
 		goto untasklet;
 	}
 
-	mmiowb();
 	ret = mmc_add_host(mmc);
 	if (ret) {
 		dev_err(dev, "could not add MMC host\n");

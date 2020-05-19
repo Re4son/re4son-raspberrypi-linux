@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2010 Broadcom Corporation
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
- * SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
- * OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 #include <linux/kernel.h>
@@ -48,86 +37,35 @@
 
 #define BRCMF_BSSIDX_INVALID			-1
 
-/* Nexmon */
-#define NETLINK_USER                     31
-#define NEXUDP_IOCTL                      0
+#define	RXS_PBPRES				BIT(2)
 
-#define MONITOR_DISABLED  0
-#define MONITOR_IEEE80211 1
-#define MONITOR_RADIOTAP  2
-#define MONITOR_LOG_ONLY  3
-#define MONITOR_DROP_FRM  4
-#define MONITOR_IPV4_UDP  5
+#define	D11_PHY_HDR_LEN				6
 
-/*NEXMON*/
-static struct netlink_kernel_cfg cfg = {0};
-static struct sock *nl_sock = NULL;
-static struct net_device *ndev_global = NULL;
+struct d11rxhdr_le {
+	__le16 RxFrameSize;
+	u16 PAD;
+	__le16 PhyRxStatus_0;
+	__le16 PhyRxStatus_1;
+	__le16 PhyRxStatus_2;
+	__le16 PhyRxStatus_3;
+	__le16 PhyRxStatus_4;
+	__le16 PhyRxStatus_5;
+	__le16 RxStatus1;
+	__le16 RxStatus2;
+	__le16 RxTSFTime;
+	__le16 RxChan;
+	u8 unknown[12];
+} __packed;
 
-struct nexudp_header {
-    char nex[3];
-    char type;
-    int securitycookie;
-} __attribute__((packed));
-
-struct nexudp_ioctl_header {
-    struct nexudp_header nexudphdr;
-    unsigned int cmd;
-    unsigned int set;
-    char payload[1];
-} __attribute__((packed));
-
-static void
-nexmon_nl_ioctl_handler(struct sk_buff *skb)
-{
-    struct nlmsghdr *nlh = (struct nlmsghdr *) skb->data;
-    struct nexudp_ioctl_header *frame = (struct nexudp_ioctl_header *) nlmsg_data(nlh);
-    struct brcmf_if *ifp = netdev_priv(ndev_global);
-    struct sk_buff *skb_out;
-    struct nlmsghdr *nlh_tx;
-
-    brcmf_err("NEXMON: %s: Enter\n", __FUNCTION__);
-
-    brcmf_err("NEXMON: %s: %08x %d %d\n", __FUNCTION__, *(int *) frame->nexudphdr.nex, nlmsg_len(nlh), skb->len);
-
-    if (memcmp(frame->nexudphdr.nex, "NEX", 3)) {
-        brcmf_err("NEXMON: %s: invalid nexudp_ioctl_header\n", __FUNCTION__);
-        return;
-    }
-
-    if (frame->nexudphdr.type != NEXUDP_IOCTL) {
-        brcmf_err("NEXMON: %s: invalid frame type\n", __FUNCTION__);
-        return;
-    }
-
-    if (ifp == NULL) {
-        brcmf_err("NEXMON: %s: ifp is NULL\n", __FUNCTION__);
-        return;
-    }
-
-    if (frame->set) {
-        brcmf_err("NEXMON: %s: calling brcmf_fil_cmd_data_set, cmd: %d\n", __FUNCTION__, frame->cmd);
-        brcmf_fil_cmd_data_set(ifp, frame->cmd, frame->payload, nlmsg_len(nlh) - sizeof(struct nexudp_ioctl_header) + sizeof(char));
-
-        skb_out = nlmsg_new(4, 0);
-        nlh_tx = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, 4, 0);
-        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
-        memcpy(nlmsg_data(nlh_tx), "ACK", 4);
-        nlmsg_unicast(nl_sock, skb_out, nlh->nlmsg_pid);
-    } else {
-        brcmf_err("NEXMON: %s: calling brcmf_fil_cmd_data_get, cmd: %d\n", __FUNCTION__, frame->cmd);
-        brcmf_fil_cmd_data_get(ifp, frame->cmd, frame->payload, nlmsg_len(nlh) - sizeof(struct nexudp_ioctl_header) + sizeof(char));
-
-        skb_out = nlmsg_new(nlmsg_len(nlh), 0);
-        nlh_tx = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, nlmsg_len(nlh), 0);
-        NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
-        memcpy(nlmsg_data(nlh_tx), frame, nlmsg_len(nlh));
-        nlmsg_unicast(nl_sock, skb_out, nlh->nlmsg_pid);
-    }
-
-    brcmf_err("NEXMON: %s: Exit\n", __FUNCTION__);
-}
-
+struct wlc_d11rxhdr {
+	struct d11rxhdr_le rxhdr;
+	__le32 tsf_l;
+	s8 rssi;
+	s8 rxpwr0;
+	s8 rxpwr1;
+	s8 do_rssi_ma;
+	s8 rxpwr[4];
+} __packed;
 
 char *brcmf_ifname(struct brcmf_if *ifp)
 {
@@ -146,7 +84,7 @@ struct brcmf_if *brcmf_get_ifp(struct brcmf_pub *drvr, int ifidx)
 	s32 bsscfgidx;
 
 	if (ifidx < 0 || ifidx >= BRCMF_MAX_IFS) {
-		brcmf_err("ifidx %d out of range\n", ifidx);
+		bphy_err(drvr, "ifidx %d out of range\n", ifidx);
 		return NULL;
 	}
 
@@ -197,7 +135,9 @@ void brcmf_configure_arp_nd_offload(struct brcmf_if *ifp, bool enable)
 
 static void _brcmf_set_multicast_list(struct work_struct *work)
 {
-	struct brcmf_if *ifp;
+	struct brcmf_if *ifp = container_of(work, struct brcmf_if,
+					    multicast_work);
+	struct brcmf_pub *drvr = ifp->drvr;
 	struct net_device *ndev;
 	struct netdev_hw_addr *ha;
 	u32 cmd_value, cnt;
@@ -205,8 +145,6 @@ static void _brcmf_set_multicast_list(struct work_struct *work)
 	char *buf, *bufp;
 	u32 buflen;
 	s32 err;
-
-	ifp = container_of(work, struct brcmf_if, multicast_work);
 
 	brcmf_dbg(TRACE, "Enter, bsscfgidx=%d\n", ifp->bsscfgidx);
 
@@ -237,7 +175,7 @@ static void _brcmf_set_multicast_list(struct work_struct *work)
 
 	err = brcmf_fil_iovar_data_set(ifp, "mcast_list", buf, buflen);
 	if (err < 0) {
-		brcmf_err("Setting mcast_list failed, %d\n", err);
+		bphy_err(drvr, "Setting mcast_list failed, %d\n", err);
 		cmd_value = cnt ? true : cmd_value;
 	}
 
@@ -250,25 +188,24 @@ static void _brcmf_set_multicast_list(struct work_struct *work)
 	 */
 	err = brcmf_fil_iovar_int_set(ifp, "allmulti", cmd_value);
 	if (err < 0)
-		brcmf_err("Setting allmulti failed, %d\n", err);
+		bphy_err(drvr, "Setting allmulti failed, %d\n", err);
 
 	/*Finally, pick up the PROMISC flag */
 	cmd_value = (ndev->flags & IFF_PROMISC) ? true : false;
 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PROMISC, cmd_value);
 	if (err < 0)
-		brcmf_err("Setting BRCMF_C_SET_PROMISC failed, %d\n",
-			  err);
-
+		bphy_err(drvr, "Setting BRCMF_C_SET_PROMISC failed, %d\n",
+			 err);
 	brcmf_configure_arp_nd_offload(ifp, !cmd_value);
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
 static void _brcmf_update_ndtable(struct work_struct *work)
 {
-	struct brcmf_if *ifp;
+	struct brcmf_if *ifp = container_of(work, struct brcmf_if,
+					    ndoffload_work);
+	struct brcmf_pub *drvr = ifp->drvr;
 	int i, ret;
-
-	ifp = container_of(work, struct brcmf_if, ndoffload_work);
 
 	/* clear the table in firmware */
 	ret = brcmf_fil_iovar_data_set(ifp, "nd_hostip_clear", NULL, 0);
@@ -282,7 +219,7 @@ static void _brcmf_update_ndtable(struct work_struct *work)
 					       &ifp->ipv6_addr_tbl[i],
 					       sizeof(struct in6_addr));
 		if (ret)
-			brcmf_err("add nd ip err %d\n", ret);
+			bphy_err(drvr, "add nd ip err %d\n", ret);
 	}
 }
 #else
@@ -295,6 +232,7 @@ static int brcmf_netdev_set_mac_address(struct net_device *ndev, void *addr)
 {
 	struct brcmf_if *ifp = netdev_priv(ndev);
 	struct sockaddr *sa = (struct sockaddr *)addr;
+	struct brcmf_pub *drvr = ifp->drvr;
 	int err;
 
 	brcmf_dbg(TRACE, "Enter, bsscfgidx=%d\n", ifp->bsscfgidx);
@@ -302,7 +240,7 @@ static int brcmf_netdev_set_mac_address(struct net_device *ndev, void *addr)
 	err = brcmf_fil_iovar_data_set(ifp, "cur_etheraddr", sa->sa_data,
 				       ETH_ALEN);
 	if (err < 0) {
-		brcmf_err("Setting cur_etheraddr failed, %d\n", err);
+		bphy_err(drvr, "Setting cur_etheraddr failed, %d\n", err);
 	} else {
 		brcmf_dbg(TRACE, "updated to %pM\n", sa->sa_data);
 		memcpy(ifp->mac_addr, sa->sa_data, ETH_ALEN);
@@ -362,7 +300,7 @@ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 
 	/* Can the device send data? */
 	if (drvr->bus_if->state != BRCMF_BUS_UP) {
-		brcmf_err("xmit rejected state=%d\n", drvr->bus_if->state);
+		bphy_err(drvr, "xmit rejected state=%d\n", drvr->bus_if->state);
 		netif_stop_queue(ndev);
 		dev_kfree_skb(skb);
 		ret = -ENODEV;
@@ -396,8 +334,8 @@ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
 		ret = pskb_expand_head(skb, ALIGN(head_delta, NET_SKB_PAD), 0,
 				       GFP_ATOMIC);
 		if (ret < 0) {
-			brcmf_err("%s: failed to expand headroom\n",
-				  brcmf_ifname(ifp));
+			bphy_err(drvr, "%s: failed to expand headroom\n",
+				 brcmf_ifname(ifp));
 			atomic_inc(&drvr->bus_if->stats.pktcow_failed);
 			goto done;
 		}
@@ -496,6 +434,31 @@ void brcmf_netif_mon_rx(struct brcmf_if *ifp, struct sk_buff *skb)
 {
 	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MONITOR_FMT_RADIOTAP)) {
 		/* Do nothing */
+	} else if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MONITOR_FMT_HW_RX_HDR)) {
+		struct wlc_d11rxhdr *wlc_rxhdr = (struct wlc_d11rxhdr *)skb->data;
+		struct ieee80211_radiotap_header *radiotap;
+		unsigned int offset;
+		u16 RxStatus1;
+
+		RxStatus1 = le16_to_cpu(wlc_rxhdr->rxhdr.RxStatus1);
+
+		offset = sizeof(struct wlc_d11rxhdr);
+		/* MAC inserts 2 pad bytes for a4 headers or QoS or A-MSDU
+		 * subframes
+		 */
+		if (RxStatus1 & RXS_PBPRES)
+			offset += 2;
+		offset += D11_PHY_HDR_LEN;
+
+		skb_pull(skb, offset);
+
+		/* TODO: use RX header to fill some radiotap data */
+		radiotap = skb_push(skb, sizeof(*radiotap));
+		memset(radiotap, 0, sizeof(*radiotap));
+		radiotap->it_len = cpu_to_le16(sizeof(*radiotap));
+
+		/* TODO: 4 bytes with receive status? */
+		skb->len -= 4;
 	} else {
 		struct ieee80211_radiotap_header *radiotap;
 
@@ -621,7 +584,8 @@ static int brcmf_netdev_stop(struct net_device *ndev)
 
 	brcmf_cfg80211_down(ndev);
 
-	brcmf_fil_iovar_data_set(ifp, "arp_hostip_clear", NULL, 0);
+	if (ifp->drvr->bus_if->state == BRCMF_BUS_UP)
+		brcmf_fil_iovar_data_set(ifp, "arp_hostip_clear", NULL, 0);
 
 	brcmf_net_setcarrier(ifp, false);
 
@@ -639,7 +603,7 @@ static int brcmf_netdev_open(struct net_device *ndev)
 
 	/* If bus is not ready, can't continue */
 	if (bus_if->state != BRCMF_BUS_UP) {
-		brcmf_err("failed bus is not ready\n");
+		bphy_err(drvr, "failed bus is not ready\n");
 		return -EAGAIN;
 	}
 
@@ -653,7 +617,7 @@ static int brcmf_netdev_open(struct net_device *ndev)
 		ndev->features &= ~NETIF_F_IP_CSUM;
 
 	if (brcmf_cfg80211_up(ndev)) {
-		brcmf_err("failed to bring up cfg80211\n");
+		bphy_err(drvr, "failed to bring up cfg80211\n");
 		return -EIO;
 	}
 
@@ -702,7 +666,7 @@ int brcmf_net_attach(struct brcmf_if *ifp, bool rtnl_locked)
 	else
 		err = register_netdev(ndev);
 	if (err != 0) {
-		brcmf_err("couldn't register the net device\n");
+		bphy_err(drvr, "couldn't register the net device\n");
 		goto fail;
 	}
 
@@ -779,6 +743,7 @@ static const struct net_device_ops brcmf_netdev_ops_p2p = {
 
 static int brcmf_net_p2p_attach(struct brcmf_if *ifp)
 {
+	struct brcmf_pub *drvr = ifp->drvr;
 	struct net_device *ndev;
 
 	brcmf_dbg(TRACE, "Enter, bsscfgidx=%d mac=%pM\n", ifp->bsscfgidx,
@@ -791,7 +756,7 @@ static int brcmf_net_p2p_attach(struct brcmf_if *ifp)
 	memcpy(ndev->dev_addr, ifp->mac_addr, ETH_ALEN);
 
 	if (register_netdev(ndev) != 0) {
-		brcmf_err("couldn't register the p2p net device\n");
+		bphy_err(drvr, "couldn't register the p2p net device\n");
 		goto fail;
 	}
 
@@ -820,8 +785,8 @@ struct brcmf_if *brcmf_add_if(struct brcmf_pub *drvr, s32 bsscfgidx, s32 ifidx,
 	 */
 	if (ifp) {
 		if (ifidx) {
-			brcmf_err("ERROR: netdev:%s already exists\n",
-				  ifp->ndev->name);
+			bphy_err(drvr, "ERROR: netdev:%s already exists\n",
+				 ifp->ndev->name);
 			netif_stop_queue(ifp->ndev);
 			brcmf_net_detach(ifp->ndev, false);
 			drvr->iflist[bsscfgidx] = NULL;
@@ -879,7 +844,7 @@ static void brcmf_del_if(struct brcmf_pub *drvr, s32 bsscfgidx,
 
 	ifp = drvr->iflist[bsscfgidx];
 	if (!ifp) {
-		brcmf_err("Null interface, bsscfgidx=%d\n", bsscfgidx);
+		bphy_err(drvr, "Null interface, bsscfgidx=%d\n", bsscfgidx);
 		return;
 	}
 	brcmf_dbg(TRACE, "Enter, bsscfgidx=%d, ifidx=%d\n", bsscfgidx,
@@ -933,16 +898,17 @@ static int brcmf_psm_watchdog_notify(struct brcmf_if *ifp,
 				     const struct brcmf_event_msg *evtmsg,
 				     void *data)
 {
+	struct brcmf_pub *drvr = ifp->drvr;
 	int err;
 
 	brcmf_dbg(TRACE, "enter: bsscfgidx=%d\n", ifp->bsscfgidx);
 
-	brcmf_err("PSM's watchdog has fired!\n");
+	bphy_err(drvr, "PSM's watchdog has fired!\n");
 
 	err = brcmf_debug_create_memdump(ifp->drvr->bus_if, data,
 					 evtmsg->datalen);
 	if (err)
-		brcmf_err("Failed to get memory dump, %d\n", err);
+		bphy_err(drvr, "Failed to get memory dump, %d\n", err);
 
 	return err;
 }
@@ -986,7 +952,7 @@ static int brcmf_inetaddr_changed(struct notifier_block *nb,
 	ret = brcmf_fil_iovar_data_get(ifp, "arp_hostip", addr_table,
 				       sizeof(addr_table));
 	if (ret) {
-		brcmf_err("fail to get arp ip table err:%d\n", ret);
+		bphy_err(drvr, "fail to get arp ip table err:%d\n", ret);
 		return NOTIFY_OK;
 	}
 
@@ -1003,7 +969,7 @@ static int brcmf_inetaddr_changed(struct notifier_block *nb,
 			ret = brcmf_fil_iovar_data_set(ifp, "arp_hostip",
 				&ifa->ifa_address, sizeof(ifa->ifa_address));
 			if (ret)
-				brcmf_err("add arp ip err %d\n", ret);
+				bphy_err(drvr, "add arp ip err %d\n", ret);
 		}
 		break;
 	case NETDEV_DOWN:
@@ -1015,8 +981,8 @@ static int brcmf_inetaddr_changed(struct notifier_block *nb,
 			ret = brcmf_fil_iovar_data_set(ifp, "arp_hostip_clear",
 						       NULL, 0);
 			if (ret) {
-				brcmf_err("fail to clear arp ip table err:%d\n",
-					  ret);
+				bphy_err(drvr, "fail to clear arp ip table err:%d\n",
+					 ret);
 				return NOTIFY_OK;
 			}
 			for (i = 0; i < ARPOL_MAX_ENTRIES; i++) {
@@ -1026,8 +992,8 @@ static int brcmf_inetaddr_changed(struct notifier_block *nb,
 							       &addr_table[i],
 							       sizeof(addr_table[i]));
 				if (ret)
-					brcmf_err("add arp ip err %d\n",
-						  ret);
+					bphy_err(drvr, "add arp ip err %d\n",
+						 ret);
 			}
 		}
 		break;
@@ -1121,6 +1087,37 @@ static int brcmf_revinfo_read(struct seq_file *s, void *data)
 	return 0;
 }
 
+static void brcmf_core_bus_reset(struct work_struct *work)
+{
+	struct brcmf_pub *drvr = container_of(work, struct brcmf_pub,
+					      bus_reset);
+
+	brcmf_bus_reset(drvr->bus_if);
+}
+
+static ssize_t bus_reset_write(struct file *file, const char __user *user_buf,
+			       size_t count, loff_t *ppos)
+{
+	struct brcmf_pub *drvr = file->private_data;
+	u8 value;
+
+	if (kstrtou8_from_user(user_buf, count, 0, &value))
+		return -EINVAL;
+
+	if (value != 1)
+		return -EINVAL;
+
+	schedule_work(&drvr->bus_reset);
+
+	return count;
+}
+
+static const struct file_operations bus_reset_fops = {
+	.open	= simple_open,
+	.llseek	= no_llseek,
+	.write	= bus_reset_write,
+};
+
 static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 {
 	int ret = -1;
@@ -1192,8 +1189,12 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 #endif
 #endif /* CONFIG_INET */
 
+	INIT_WORK(&drvr->bus_reset, brcmf_core_bus_reset);
+
 	/* populate debugfs */
 	brcmf_debugfs_add_entry(drvr, "revinfo", brcmf_revinfo_read);
+	debugfs_create_file("reset", 0600, brcmf_debugfs_get_devdir(drvr), drvr,
+			    &bus_reset_fops);
 	brcmf_feat_debugfs_create(drvr);
 	brcmf_proto_debugfs_create(drvr);
 	brcmf_bus_debugfs_create(bus_if);
@@ -1201,7 +1202,7 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
 	return 0;
 
 fail:
-	brcmf_err("failed: %d\n", ret);
+	bphy_err(drvr, "failed: %d\n", ret);
 	if (drvr->config) {
 		brcmf_cfg80211_detach(drvr->config);
 		drvr->config = NULL;
@@ -1217,13 +1218,11 @@ fail:
 	return ret;
 }
 
-int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
+int brcmf_alloc(struct device *dev, struct brcmf_mp_device *settings)
 {
 	struct wiphy *wiphy;
 	struct cfg80211_ops *ops;
 	struct brcmf_pub *drvr = NULL;
-	int ret = 0;
-	int i;
 
 	brcmf_dbg(TRACE, "Enter\n");
 
@@ -1232,12 +1231,30 @@ int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
 		return -ENOMEM;
 
 	wiphy = wiphy_new(ops, sizeof(*drvr));
-	if (!wiphy)
+	if (!wiphy) {
+		kfree(ops);
 		return -ENOMEM;
+	}
 
 	set_wiphy_dev(wiphy, dev);
 	drvr = wiphy_priv(wiphy);
 	drvr->wiphy = wiphy;
+	drvr->ops = ops;
+	drvr->bus_if = dev_get_drvdata(dev);
+	drvr->bus_if->drvr = drvr;
+	drvr->settings = settings;
+
+	return 0;
+}
+
+int brcmf_attach(struct device *dev)
+{
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pub *drvr = bus_if->drvr;
+	int ret = 0;
+	int i;
+
+	brcmf_dbg(TRACE, "Enter\n");
 
 	for (i = 0; i < ARRAY_SIZE(drvr->if2bss); i++)
 		drvr->if2bss[i] = BRCMF_BSSIDX_INVALID;
@@ -1246,14 +1263,11 @@ int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
 
 	/* Link to bus module */
 	drvr->hdrlen = 0;
-	drvr->bus_if = dev_get_drvdata(dev);
-	drvr->bus_if->drvr = drvr;
-	drvr->settings = settings;
 
 	/* Attach and link in the protocol */
 	ret = brcmf_proto_attach(drvr);
 	if (ret != 0) {
-		brcmf_err("brcmf_prot_attach failed\n");
+		bphy_err(drvr, "brcmf_prot_attach failed\n");
 		goto fail;
 	}
 
@@ -1264,18 +1278,16 @@ int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
 	/* attach firmware event handler */
 	brcmf_fweh_attach(drvr);
 
-	ret = brcmf_bus_started(drvr, ops);
+	ret = brcmf_bus_started(drvr, drvr->ops);
 	if (ret != 0) {
-		brcmf_err("dongle is not responding: err=%d\n", ret);
+		bphy_err(drvr, "dongle is not responding: err=%d\n", ret);
 		goto fail;
 	}
 
-	drvr->config->ops = ops;
 	return 0;
 
 fail:
 	brcmf_detach(dev);
-	kfree(ops);
 
 	return ret;
 }
@@ -1310,6 +1322,18 @@ void brcmf_dev_coredump(struct device *dev)
 		brcmf_dbg(TRACE, "failed to create coredump\n");
 }
 
+void brcmf_fw_crashed(struct device *dev)
+{
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pub *drvr = bus_if->drvr;
+
+	bphy_err(drvr, "Firmware has halted or crashed\n");
+
+	brcmf_dev_coredump(dev);
+
+	schedule_work(&drvr->bus_reset);
+}
+
 void brcmf_detach(struct device *dev)
 {
 	s32 i;
@@ -1329,12 +1353,16 @@ void brcmf_detach(struct device *dev)
 	unregister_inet6addr_notifier(&drvr->inet6addr_notifier);
 #endif
 
-	/* stop firmware event handling */
-	brcmf_fweh_detach(drvr);
-	if (drvr->config)
-		brcmf_p2p_detach(&drvr->config->p2p);
-
 	brcmf_bus_change_state(bus_if, BRCMF_BUS_DOWN);
+	brcmf_bus_stop(drvr->bus_if);
+
+	brcmf_fweh_detach(drvr);
+	brcmf_proto_detach(drvr);
+
+	if (drvr->mon_if) {
+		brcmf_net_detach(drvr->mon_if->ndev, false);
+		drvr->mon_if = NULL;
+	}
 
 	brcmf_proto_detach_pre_delif(drvr);
 
@@ -1344,17 +1372,30 @@ void brcmf_detach(struct device *dev)
 	}
 
 	/* make sure primary interface removed last */
-	for (i = BRCMF_MAX_IFS-1; i > -1; i--)
-		brcmf_remove_interface(drvr->iflist[i], false);
+	for (i = BRCMF_MAX_IFS - 1; i > -1; i--) {
+		if (drvr->iflist[i])
+			brcmf_del_if(drvr, drvr->iflist[i]->bsscfgidx, false);
+	}
 
-	brcmf_cfg80211_detach(drvr->config);
-	drvr->config = NULL;
+	if (drvr->config) {
+		brcmf_p2p_detach(&drvr->config->p2p);
+		brcmf_cfg80211_detach(drvr->config);
+		drvr->config = NULL;
+	}
+}
 
-	brcmf_bus_stop(drvr->bus_if);
+void brcmf_free(struct device *dev)
+{
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pub *drvr = bus_if->drvr;
 
-	brcmf_proto_detach_post_delif(drvr);
+	if (!drvr)
+		return;
 
 	bus_if->drvr = NULL;
+
+	kfree(drvr->ops);
+
 	wiphy_free(drvr->wiphy);
 }
 
@@ -1373,6 +1414,7 @@ static int brcmf_get_pend_8021x_cnt(struct brcmf_if *ifp)
 
 int brcmf_netdev_wait_pend8021x(struct brcmf_if *ifp)
 {
+	struct brcmf_pub *drvr = ifp->drvr;
 	int err;
 
 	err = wait_event_timeout(ifp->pend_8021x_wait,
@@ -1380,7 +1422,7 @@ int brcmf_netdev_wait_pend8021x(struct brcmf_if *ifp)
 				 MAX_WAIT_FOR_8021X_TX);
 
 	if (!err)
-		brcmf_err("Timed out waiting for no pending 802.1x packets\n");
+		bphy_err(drvr, "Timed out waiting for no pending 802.1x packets\n");
 
 	return !err;
 }

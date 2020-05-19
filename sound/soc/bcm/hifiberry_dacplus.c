@@ -240,12 +240,10 @@ static int snd_rpi_hifiberry_dacplus_hw_params(
 			substream, params);
 	}
 
-	ret = snd_soc_dai_set_tdm_slot(rtd->cpu_dai, 0x03, 0x03,
-		channels, width);
+	ret = snd_soc_dai_set_bclk_ratio(rtd->cpu_dai, channels * width);
 	if (ret)
 		return ret;
-	ret = snd_soc_dai_set_tdm_slot(rtd->codec_dai, 0x03, 0x03,
-		channels, width);
+	ret = snd_soc_dai_set_bclk_ratio(rtd->codec_dai, channels * width);
 	return ret;
 }
 
@@ -277,18 +275,20 @@ static struct snd_soc_ops snd_rpi_hifiberry_dacplus_ops = {
 	.shutdown = snd_rpi_hifiberry_dacplus_shutdown,
 };
 
+SND_SOC_DAILINK_DEFS(rpi_hifiberry_dacplus,
+	DAILINK_COMP_ARRAY(COMP_CPU("bcm2708-i2s.0")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("pcm512x.1-004d", "pcm512x-hifi")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("bcm2708-i2s.0")));
+
 static struct snd_soc_dai_link snd_rpi_hifiberry_dacplus_dai[] = {
 {
 	.name		= "HiFiBerry DAC+",
 	.stream_name	= "HiFiBerry DAC+ HiFi",
-	.cpu_dai_name	= "bcm2708-i2s.0",
-	.codec_dai_name	= "pcm512x-hifi",
-	.platform_name	= "bcm2708-i2s.0",
-	.codec_name	= "pcm512x.1-004d",
 	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				SND_SOC_DAIFMT_CBS_CFS,
 	.ops		= &snd_rpi_hifiberry_dacplus_ops,
 	.init		= snd_rpi_hifiberry_dacplus_init,
+	SND_SOC_DAILINK_REG(rpi_hifiberry_dacplus),
 },
 };
 
@@ -315,10 +315,10 @@ static int snd_rpi_hifiberry_dacplus_probe(struct platform_device *pdev)
 			"i2s-controller", 0);
 
 		if (i2s_node) {
-			dai->cpu_dai_name = NULL;
-			dai->cpu_of_node = i2s_node;
-			dai->platform_name = NULL;
-			dai->platform_of_node = i2s_node;
+			dai->cpus->dai_name = NULL;
+			dai->cpus->of_node = i2s_node;
+			dai->platforms->name = NULL;
+			dai->platforms->of_node = i2s_node;
 		}
 
 		digital_gain_0db_limit = !of_property_read_bool(

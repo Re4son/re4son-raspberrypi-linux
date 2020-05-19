@@ -1,68 +1,56 @@
+// SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
-
 #include "bcm2711.dtsi"
-#include "bcm2711-rpi.dtsi"
-#include "bcm283x-rpi-csi1-2lane.dtsi"
+#include "bcm2835-rpi.dtsi"
 
 / {
 	compatible = "raspberrypi,4-model-b", "brcm,bcm2711";
 	model = "Raspberry Pi 4 Model B";
 
-	memory@0 {
-		device_type = "memory";
-		reg = <0x0 0x0 0x0>;
+	chosen {
+		/* 8250 auxiliary UART instead of pl011 */
+		stdout-path = "serial1:115200n8";
 	};
 
-	chosen {
-		bootargs = "coherent_pool=1M 8250.nr_uarts=1 cma=64M";
+	/* Will be filled by the bootloader */
+	memory@0 {
+		device_type = "memory";
+		reg = <0 0 0>;
 	};
 
 	aliases {
-		serial0 = &uart1;
-		serial1 = &uart0;
-		mmc0 = &emmc2;
-		mmc1 = &mmcnr;
-		mmc2 = &sdhost;
-		i2c3 = &i2c3;
-		i2c4 = &i2c4;
-		i2c5 = &i2c5;
-		i2c6 = &i2c6;
-		/delete-property/ ethernet;
-		/delete-property/ intc;
 		ethernet0 = &genet;
-		pcie0 = &pcie_0;
-		emmc2bus = &emmc2bus;
 	};
-};
 
-/delete-node/ &emmc2;
+	leds {
+		act {
+			gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+		};
 
-/ {
-	emmc2bus: emmc2bus {
-		compatible = "simple-bus";
-		#address-cells = <2>;
-		#size-cells = <1>;
-
-		ranges = <0x0 0x7e000000  0x0 0xfe000000  0x01800000>;
-		dma-ranges = <0x0 0xc0000000  0x0 0x00000000  0x3c000000>;
-
-		emmc2: emmc2@7e340000 {
-			compatible = "brcm,bcm2711-emmc2";
-			status = "okay";
-			interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&clocks BCM2711_CLOCK_EMMC2>;
-			reg = <0x0 0x7e340000 0x100>;
-			vqmmc-supply = <&sd_io_1v8_reg>;
-			broken-cd;
+		pwr {
+			label = "PWR";
+			gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
 		};
 	};
-};
 
-&mmcnr {
-	pinctrl-names = "default";
-	pinctrl-0 = <&sdio_pins>;
-	bus-width = <4>;
-	status = "okay";
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&expgpio 1 GPIO_ACTIVE_LOW>;
+	};
+
+	sd_io_1v8_reg: sd_io_1v8_reg {
+		compatible = "regulator-gpio";
+		regulator-name = "vdd-sd-io";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-settling-time-us = <5000>;
+		gpios = <&expgpio 4 GPIO_ACTIVE_HIGH>;
+		states = <1800000 0x1
+			  3300000 0x0>;
+		status = "okay";
+	};
 };
 
 &firmware {
@@ -76,22 +64,198 @@
 				  "GLOBAL_RESET",
 				  "VDD_SD_IO_SEL",
 				  "CAM_GPIO",
-				  "",
-				  "";
+				  "SD_PWR_ON",
+				  "SD_OC_N";
 		status = "okay";
 	};
 };
 
-&uart0 {
+&pwm1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&uart0_pins &bt_pins>;
+	pinctrl-0 = <&pwm1_0_gpio40 &pwm1_1_gpio41>;
 	status = "okay";
 };
 
+/* SDHCI is used to control the SDIO for wireless */
+&sdhci {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_gpio34>;
+	bus-width = <4>;
+	non-removable;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	status = "okay";
+
+	brcmf: wifi@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+	};
+};
+
+/* EMMC2 is used to drive the SD card */
+&emmc2 {
+	vqmmc-supply = <&sd_io_1v8_reg>;
+	broken-cd;
+	status = "okay";
+};
+
+&genet {
+	phy-handle = <&phy1>;
+	phy-mode = "rgmii-rxid";
+	status = "okay";
+};
+
+&genet_mdio {
+	phy1: ethernet-phy@1 {
+		/* No PHY interrupt */
+		reg = <0x1>;
+	};
+};
+
+/* uart0 communicates with the BT module */
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_ctsrts_gpio30 &uart0_gpio32>;
+	uart-has-rtscts;
+	status = "okay";
+
+	bluetooth {
+		compatible = "brcm,bcm43438-bt";
+		max-speed = <2000000>;
+		shutdown-gpios = <&expgpio 0 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+/* uart1 is mapped to the pin header */
 &uart1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&uart1_pins>;
+	pinctrl-0 = <&uart1_gpio14>;
 	status = "okay";
+};
+
+&vchiq {
+	interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&vc4 {
+	status = "okay";
+};
+
+&pixelvalve0 {
+	status = "okay";
+};
+
+&pixelvalve1 {
+	status = "okay";
+};
+
+&pixelvalve2 {
+	status = "okay";
+};
+
+&pixelvalve3 {
+	status = "okay";
+};
+
+&pixelvalve4 {
+	status = "okay";
+};
+
+&hdmi0 {
+	status = "okay";
+};
+
+&ddc0 {
+	status = "okay";
+};
+
+&hdmi1 {
+	status = "okay";
+};
+
+&ddc1 {
+	status = "okay";
+};
+
+// =============================================
+// Downstream rpi- changes
+
+#include "bcm270x.dtsi"
+
+/ {
+	soc {
+		/delete-node/ pixelvalve@7e807000;
+		/delete-node/ hdmi@7e902000;
+	};
+};
+
+#include "bcm2711-rpi.dtsi"
+#include "bcm283x-rpi-csi1-2lane.dtsi"
+#include "bcm283x-rpi-i2c0mux_0_44.dtsi"
+
+/delete-node/ &emmc2;
+
+/ {
+	chosen {
+		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1 snd_bcm2835.enable_headphones=1";
+	};
+
+	aliases {
+		serial0 = &uart1;
+		serial1 = &uart0;
+		mmc0 = &emmc2;
+		mmc1 = &mmcnr;
+		mmc2 = &sdhost;
+		/delete-property/ i2c2;
+		i2c3 = &i2c3;
+		i2c4 = &i2c4;
+		i2c5 = &i2c5;
+		i2c6 = &i2c6;
+		/delete-property/ ethernet;
+		/delete-property/ intc;
+		pcie0 = &pcie0;
+		emmc2bus = &emmc2bus;
+	};
+
+	emmc2bus: emmc2bus {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <1>;
+
+		ranges = <0x0 0x7e000000  0x0 0xfe000000  0x01800000>;
+		dma-ranges = <0x0 0xc0000000  0x0 0x00000000  0x40000000>;
+
+		emmc2: emmc2@7e340000 {
+			compatible = "brcm,bcm2711-emmc2";
+			status = "okay";
+			interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&clocks BCM2711_CLOCK_EMMC2>;
+			reg = <0x0 0x7e340000 0x100>;
+			vqmmc-supply = <&sd_io_1v8_reg>;
+			broken-cd;
+		};
+	};
+
+	/delete-node/ wifi-pwrseq;
+};
+
+&mmcnr {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_pins>;
+	bus-width = <4>;
+	status = "okay";
+};
+
+&uart0 {
+	pinctrl-0 = <&uart0_pins &bt_pins>;
+	status = "okay";
+
+	/delete-node/ bluetooth;
+};
+
+&uart1 {
+	pinctrl-0 = <&uart1_pins>;
 };
 
 &spi0 {
@@ -114,73 +278,6 @@
 		#size-cells = <0>;
 		spi-max-frequency = <125000000>;
 	};
-};
-
-// =============================================
-// Board specific stuff here
-
-/ {
-
-	sd_io_1v8_reg: sd_io_1v8_reg {
-		status = "okay";
-		compatible = "regulator-gpio";
-		vin-supply = <&vdd_5v0_reg>;
-		regulator-name = "vdd-sd-io";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-boot-on;
-		regulator-always-on;
-		regulator-settling-time-us = <5000>;
-
-		gpios = <&expgpio 4 GPIO_ACTIVE_HIGH>;
-		states = <1800000 0x1
-			  3300000 0x0>;
-	};
-
-	sd_vcc_reg: sd_vcc_reg {
-		compatible = "regulator-fixed";
-		regulator-name = "vcc-sd";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-boot-on;
-		enable-active-high;
-		gpio = <&expgpio 6 GPIO_ACTIVE_HIGH>;
-	};
-};
-
-&sdhost {
-	status = "disabled";
-};
-
-&emmc2 {
-	status = "okay";
-	broken-cd;
-	vqmmc-supply = <&sd_io_1v8_reg>;
-	vmmc-supply = <&sd_vcc_reg>;
-};
-
-&leds {
-	act_led: act {
-		label = "led0";
-		linux,default-trigger = "mmc0";
-		gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
-	};
-
-	pwr_led: pwr {
-		label = "led1";
-		linux,default-trigger = "default-on";
-		gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
-	};
-};
-
-&audio {
-	pinctrl-names = "default";
-	pinctrl-0 = <&audio_pins>;
-};
-
-&sdhost_gpio48 {
-	brcm,pins = <22 23 24 25 26 27>;
-	brcm,function = <BCM2835_FSEL_ALT0>;
 };
 
 &gpio {
@@ -323,16 +420,9 @@
 		brcm,function = <BCM2835_FSEL_ALT4>;
 		brcm,pull = <0 2>;
 	};
-
-	audio_pins: audio_pins {
-		brcm,pins = <40 41>;
-		brcm,function = <4>;
-	};
 };
 
-&i2c0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c0_pins>;
+&i2c0if {
 	clock-frequency = <100000>;
 };
 
@@ -342,13 +432,113 @@
 	clock-frequency = <100000>;
 };
 
-&i2c2 {
-	clock-frequency = <100000>;
-};
-
 &i2s {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2s_pins>;
+};
+
+/ {
+	__overrides__ {
+		/delete-property/ i2c2_baudrate;
+		/delete-property/ i2c2_iknowwhatimdoing;
+	};
+};
+
+// =============================================
+// Board specific stuff here
+
+/ {
+	sd_vcc_reg: sd_vcc_reg {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc-sd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		enable-active-high;
+		gpio = <&expgpio 6 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&sdhost {
+	status = "disabled";
+};
+
+&emmc2 {
+	vmmc-supply = <&sd_vcc_reg>;
+};
+
+&phy1 {
+	led-modes = <0x00 0x08>; /* link/activity link */
+};
+
+&gpio {
+	audio_pins: audio_pins {
+		brcm,pins = <40 41>;
+		brcm,function = <4>;
+	};
+};
+
+&leds {
+	act_led: act {
+		label = "led0";
+		linux,default-trigger = "mmc0";
+		gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+	};
+
+	pwr_led: pwr {
+		label = "led1";
+		linux,default-trigger = "default-on";
+		gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&pwm1 {
+	status = "disabled";
+};
+
+&audio {
+	pinctrl-names = "default";
+	pinctrl-0 = <&audio_pins>;
+};
+
+&vc4 {
+	status = "disabled";
+};
+
+&pixelvalve0 {
+	status = "disabled";
+};
+
+&pixelvalve1 {
+	status = "disabled";
+};
+
+&pixelvalve2 {
+	status = "disabled";
+};
+
+&pixelvalve3 {
+	status = "disabled";
+};
+
+&pixelvalve4 {
+	status = "disabled";
+};
+
+&hdmi0 {
+	status = "disabled";
+};
+
+&ddc0 {
+	status = "disabled";
+};
+
+&hdmi1 {
+	status = "disabled";
+};
+
+&ddc1 {
+	status = "disabled";
 };
 
 / {
@@ -364,6 +554,7 @@
 		eth_led0 = <&phy1>,"led-modes:0";
 		eth_led1 = <&phy1>,"led-modes:4";
 
-		sd_poll_once = <&emmc2>, "non-removable?";
+		spi_dma4 = <&spi0>, "dmas:0=", <&dma40>,
+			   <&spi0>, "dmas:8=", <&dma40>;
 	};
 };

@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0+
 /* Copyright (C) 2015-2018 Broadcom */
 
-#include <linux/reservation.h>
-#include <linux/mm_types.h>
-#include <drm/drmP.h>
+#include <linux/delay.h>
+#include <linux/mutex.h>
+#include <linux/spinlock_types.h>
+#include <linux/workqueue.h>
+
 #include <drm/drm_encoder.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/gpu_scheduler.h>
 #include "uapi/drm/v3d_drm.h"
+
+#include "uapi/drm/v3d_drm.h"
+
+struct clk;
+struct device;
+struct platform_device;
+struct reset_control;
 
 #define GMP_GRANULARITY (128 * 1024)
 
@@ -63,6 +73,8 @@ struct v3d_dev {
 	 */
 	void *mmu_scratch;
 	dma_addr_t mmu_scratch_paddr;
+	/* virtual address bits from V3D to the MMU. */
+	int va_width;
 
 	/* Number of V3D cores. */
 	u32 cores;
@@ -132,34 +144,15 @@ struct v3d_file_priv {
 	struct drm_sched_entity sched_entity[V3D_MAX_QUEUES];
 };
 
-/* Tracks a mapping of a BO into a per-fd address space */
-struct v3d_vma {
-	struct v3d_page_table *pt;
-	struct list_head list; /* entry in v3d_bo.vmas */
-};
-
 struct v3d_bo {
-	struct drm_gem_object base;
-
-	struct mutex lock;
+	struct drm_gem_shmem_object base;
 
 	struct drm_mm_node node;
-
-	u32 pages_refcount;
-	struct page **pages;
-	struct sg_table *sgt;
-	void *vaddr;
-
-	struct list_head vmas;    /* list of v3d_vma */
 
 	/* List entry for the BO's position in
 	 * v3d_render_job->unref_list
 	 */
 	struct list_head unref_head;
-
-	/* normally (resv == &_resv) except for imported bo's */
-	struct reservation_object *resv;
-	struct reservation_object _resv;
 };
 
 static inline struct v3d_bo *
@@ -204,12 +197,13 @@ struct v3d_job {
 	/* This is the array of BOs that were looked up at the start
 	 * of submission.
 	 */
-	struct v3d_bo **bo;
+	struct drm_gem_object **bo;
 	u32 bo_count;
 
-	struct dma_fence **deps;
-	int deps_count;
-	int deps_size;
+	/* Array of struct dma_fence * to block on before submitting this job.
+	 */
+	struct xarray deps;
+	unsigned long last_dep;
 
 	/* v3d fence to be signaled by IRQ handler when the job is complete. */
 	struct dma_fence *irq_fence;
@@ -314,6 +308,7 @@ static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
 }
 
 /* v3d_bo.c */
+struct drm_gem_object *v3d_create_object(struct drm_device *dev, size_t size);
 void v3d_free_object(struct drm_gem_object *gem_obj);
 struct v3d_bo *v3d_bo_create(struct drm_device *dev, struct drm_file *file_priv,
 			     size_t size);
@@ -323,11 +318,6 @@ int v3d_mmap_bo_ioctl(struct drm_device *dev, void *data,
 		      struct drm_file *file_priv);
 int v3d_get_bo_offset_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *file_priv);
-vm_fault_t v3d_gem_fault(struct vm_fault *vmf);
-int v3d_mmap(struct file *filp, struct vm_area_struct *vma);
-struct reservation_object *v3d_prime_res_obj(struct drm_gem_object *obj);
-int v3d_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
-struct sg_table *v3d_prime_get_sg_table(struct drm_gem_object *obj);
 struct drm_gem_object *v3d_prime_import_sg_table(struct drm_device *dev,
 						 struct dma_buf_attachment *attach,
 						 struct sg_table *sgt);

@@ -59,6 +59,7 @@ v3d_job_free(struct drm_sched_job *sched_job)
 {
 	struct v3d_job *job = to_v3d_job(sched_job);
 
+	drm_sched_job_cleanup(sched_job);
 	v3d_job_put(job);
 }
 
@@ -74,9 +75,14 @@ v3d_job_dependency(struct drm_sched_job *sched_job,
 {
 	struct v3d_job *job = to_v3d_job(sched_job);
 
-	if (!job->deps_count)
-		return NULL;
-	return job->deps[--job->deps_count];
+	/* XXX: Wait on a fence for switching the GMP if necessary,
+	 * and then do so.
+	 */
+
+	if (!xa_empty(&job->deps))
+		return xa_erase(&job->deps, job->last_dep++);
+
+	return NULL;
 }
 
 static struct dma_fence *v3d_bin_job_run(struct drm_sched_job *sched_job)
@@ -261,21 +267,21 @@ v3d_gpu_reset_for_timeout(struct v3d_dev *v3d, struct drm_sched_job *sched_job)
 	mutex_lock(&v3d->reset_lock);
 
 	/* block scheduler */
-	for (q = 0; q < V3D_MAX_QUEUES; q++) {
-		struct drm_gpu_scheduler *sched = &v3d->queue[q].sched;
+	for (q = 0; q < V3D_MAX_QUEUES; q++)
+		drm_sched_stop(&v3d->queue[q].sched, sched_job);
 
-		kthread_park(sched->thread);
-		drm_sched_hw_job_reset(sched, (sched_job->sched == sched ?
-					       sched_job : NULL));
-	}
+	if (sched_job)
+		drm_sched_increase_karma(sched_job);
 
 	/* get the GPU back into the init state */
 	v3d_reset(v3d);
 
+	for (q = 0; q < V3D_MAX_QUEUES; q++)
+		drm_sched_resubmit_jobs(&v3d->queue[q].sched);
+
 	/* Unblock schedulers and restart their jobs. */
 	for (q = 0; q < V3D_MAX_QUEUES; q++) {
-		drm_sched_job_recovery(&v3d->queue[q].sched);
-		kthread_unpark(v3d->queue[q].sched.thread);
+		drm_sched_start(&v3d->queue[q].sched, true);
 	}
 
 	mutex_unlock(&v3d->reset_lock);
@@ -288,7 +294,7 @@ v3d_gpu_reset_for_timeout(struct v3d_dev *v3d, struct drm_sched_job *sched_job)
  */
 static void
 v3d_cl_job_timedout(struct drm_sched_job *sched_job, enum v3d_queue q,
-		      u32 *timedout_ctca, u32 *timedout_ctra)
+		    u32 *timedout_ctca, u32 *timedout_ctra)
 {
 	struct v3d_job *job = to_v3d_job(sched_job);
 	struct v3d_dev *v3d = job->v3d;
@@ -298,8 +304,6 @@ v3d_cl_job_timedout(struct drm_sched_job *sched_job, enum v3d_queue q,
 	if (*timedout_ctca != ctca || *timedout_ctra != ctra) {
 		*timedout_ctca = ctca;
 		*timedout_ctra = ctra;
-		schedule_delayed_work(&job->base.work_tdr,
-				      job->base.sched->timeout);
 		return;
 	}
 
@@ -462,7 +466,7 @@ v3d_sched_fini(struct v3d_dev *v3d)
 	enum v3d_queue q;
 
 	for (q = 0; q < V3D_MAX_QUEUES; q++) {
-		if (v3d->queue[q].sched.ops)
+		if (v3d->queue[q].sched.ready)
 			drm_sched_fini(&v3d->queue[q].sched);
 	}
 }

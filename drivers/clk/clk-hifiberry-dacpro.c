@@ -109,7 +109,7 @@ static int clk_hifiberry_dacpro_probe(struct platform_device *pdev)
 
 	init.name = "clk-hifiberry-dacpro";
 	init.ops = &clk_hifiberry_dacpro_rate_ops;
-	init.flags = CLK_IS_BASIC;
+	init.flags = 0;
 	init.parent_names = NULL;
 	init.num_parents = 0;
 

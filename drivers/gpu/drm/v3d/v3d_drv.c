@@ -14,16 +14,19 @@
 
 #include <linux/clk.h>
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
+
+#include <drm/drm_drv.h>
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fb_helper.h>
+#include <uapi/drm/v3d_drm.h>
 
-#include "uapi/drm/v3d_drm.h"
 #include "v3d_drv.h"
 #include "v3d_regs.h"
 
@@ -163,17 +166,7 @@ v3d_postclose(struct drm_device *dev, struct drm_file *file)
 	kfree(v3d_priv);
 }
 
-static const struct file_operations v3d_drm_fops = {
-	.owner = THIS_MODULE,
-	.open = drm_open,
-	.release = drm_release,
-	.unlocked_ioctl = drm_ioctl,
-	.mmap = v3d_mmap,
-	.poll = drm_poll,
-	.read = drm_read,
-	.compat_ioctl = drm_compat_ioctl,
-	.llseek = noop_llseek,
-};
+DEFINE_DRM_GEM_SHMEM_FOPS(v3d_drm_fops);
 
 /* DRM_AUTH is required on SUBMIT_CL for now, while we don't have GMP
  * protection between clients.  Note that render nodes would be be
@@ -192,16 +185,9 @@ static const struct drm_ioctl_desc v3d_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_CSD, v3d_submit_csd_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
 };
 
-static const struct vm_operations_struct v3d_vm_ops = {
-	.fault = v3d_gem_fault,
-	.open = drm_gem_vm_open,
-	.close = drm_gem_vm_close,
-};
-
 static struct drm_driver v3d_drm_driver = {
 	.driver_features = (DRIVER_GEM |
 			    DRIVER_RENDER |
-			    DRIVER_PRIME |
 			    DRIVER_SYNCOBJ),
 
 	.open = v3d_open,
@@ -211,17 +197,11 @@ static struct drm_driver v3d_drm_driver = {
 	.debugfs_init = v3d_debugfs_init,
 #endif
 
-	.gem_free_object_unlocked = v3d_free_object,
-	.gem_vm_ops = &v3d_vm_ops,
-
+	.gem_create_object = v3d_create_object,
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
-	.gem_prime_import = drm_gem_prime_import,
-	.gem_prime_export = drm_gem_prime_export,
-	.gem_prime_res_obj = v3d_prime_res_obj,
-	.gem_prime_get_sg_table	= v3d_prime_get_sg_table,
 	.gem_prime_import_sg_table = v3d_prime_import_sg_table,
-	.gem_prime_mmap = v3d_prime_mmap,
+	.gem_prime_mmap = drm_gem_prime_mmap,
 
 	.ioctls = v3d_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(v3d_drm_ioctls),
@@ -259,9 +239,9 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 	struct drm_device *drm;
 	struct v3d_dev *v3d;
 	int ret;
+	u32 mmu_debug;
 	u32 ident1;
 
-	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
 
 	v3d = kzalloc(sizeof(*v3d), GFP_KERNEL);
 	if (!v3d)
@@ -277,6 +257,11 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 	ret = map_regs(v3d, &v3d->core_regs[0], "core0");
 	if (ret)
 		goto dev_free;
+
+	mmu_debug = V3D_READ(V3D_MMU_DEBUG_INFO);
+	dma_set_mask_and_coherent(dev,
+		DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH)));
+	v3d->va_width = 30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_VA_WIDTH);
 
 	ident1 = V3D_READ(V3D_HUB_IDENT1);
 	v3d->ver = (V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_TVER) * 10 +
@@ -300,9 +285,7 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 		}
 	}
 
-	v3d->clk = devm_clk_get(dev, "v3d");
-	if (!v3d->clk)
-		v3d->clk = devm_clk_get(dev, NULL);
+	v3d->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR_OR_NULL(v3d->clk)) {
 		if (PTR_ERR(v3d->clk) != -EPROBE_DEFER)
 			dev_err(dev, "Failed to get clock (%ld)\n", PTR_ERR(v3d->clk));

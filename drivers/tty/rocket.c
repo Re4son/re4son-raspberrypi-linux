@@ -632,18 +632,21 @@ init_r_port(int board, int aiop, int chan, struct pci_dev *pci_dev)
 	tty_port_init(&info->port);
 	info->port.ops = &rocket_port_ops;
 	info->flags &= ~ROCKET_MODE_MASK;
-	switch (pc104[board][line]) {
-	case 422:
-		info->flags |= ROCKET_MODE_RS422;
-		break;
-	case 485:
-		info->flags |= ROCKET_MODE_RS485;
-		break;
-	case 232:
-	default:
+	if (board < ARRAY_SIZE(pc104) && line < ARRAY_SIZE(pc104_1))
+		switch (pc104[board][line]) {
+		case 422:
+			info->flags |= ROCKET_MODE_RS422;
+			break;
+		case 485:
+			info->flags |= ROCKET_MODE_RS485;
+			break;
+		case 232:
+		default:
+			info->flags |= ROCKET_MODE_RS232;
+			break;
+		}
+	else
 		info->flags |= ROCKET_MODE_RS232;
-		break;
-	}
 
 	info->intmask = RXF_TRIG | TXFIFO_MT | SRC_INT | DELTA_CD | DELTA_CTS | DELTA_DSR;
 	if (sInitChan(ctlp, &info->channel, aiop, chan) == 0) {
@@ -1283,23 +1286,29 @@ static int rp_ioctl(struct tty_struct *tty,
 		return -ENXIO;
 
 	switch (cmd) {
-	case RCKP_GET_STRUCT:
-		if (copy_to_user(argp, info, sizeof (struct r_port)))
-			ret = -EFAULT;
-		break;
 	case RCKP_GET_CONFIG:
+		dev_warn_ratelimited(tty->dev,
+					"RCKP_GET_CONFIG option is deprecated\n");
 		ret = get_config(info, argp);
 		break;
 	case RCKP_SET_CONFIG:
+		dev_warn_ratelimited(tty->dev,
+					"RCKP_SET_CONFIG option is deprecated\n");
 		ret = set_config(tty, info, argp);
 		break;
 	case RCKP_GET_PORTS:
+		dev_warn_ratelimited(tty->dev,
+					"RCKP_GET_PORTS option is deprecated\n");
 		ret = get_ports(info, argp);
 		break;
 	case RCKP_RESET_RM2:
+		dev_warn_ratelimited(tty->dev,
+					"RCKP_RESET_RM2 option is deprecated\n");
 		ret = reset_rm2(info, argp);
 		break;
 	case RCKP_GET_VERSION:
+		dev_warn_ratelimited(tty->dev,
+					"RCKP_GET_VERSION option is deprecated\n");
 		ret = get_version(info, argp);
 		break;
 	default:

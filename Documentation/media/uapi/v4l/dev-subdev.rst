@@ -1,4 +1,11 @@
-.. -*- coding: utf-8; mode: rst -*-
+.. Permission is granted to copy, distribute and/or modify this
+.. document under the terms of the GNU Free Documentation License,
+.. Version 1.1 or any later version published by the Free Software
+.. Foundation, with no Invariant Sections, no Front-Cover Texts
+.. and no Back-Cover Texts. A copy of the license is included at
+.. Documentation/media/uapi/fdl-appendix.rst.
+..
+.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
 
 .. _subdev:
 
@@ -31,6 +38,11 @@ will feature a character device node on which ioctls can be called to
 
 Sub-device character device nodes, conventionally named
 ``/dev/v4l-subdev*``, use major number 81.
+
+Drivers may opt to limit the sub-device character devices to only expose
+operations that do not modify the device state. In such a case the sub-devices
+are referred to as ``read-only`` in the rest of this documentation, and the
+related restrictions are documented in individual ioctls.
 
 
 Controls
@@ -204,7 +216,7 @@ list entity names and pad numbers).
 
 .. raw:: latex
 
-    \tiny
+    \scriptsize
 
 .. tabularcolumns:: |p{2.0cm}|p{2.3cm}|p{2.3cm}|p{2.3cm}|p{2.3cm}|p{2.3cm}|p{2.3cm}|
 
@@ -216,40 +228,80 @@ list entity names and pad numbers).
     :widths: 5 5 5 5 5 5 5
 
     * -
-      - Sensor/0 format
-      - Frontend/0 format
-      - Frontend/1 format
-      - Scaler/0 format
-      - Scaler/0 compose selection rectangle
-      - Scaler/1 format
+      - Sensor/0
+
+        format
+      - Frontend/0
+
+        format
+      - Frontend/1
+
+        format
+      - Scaler/0
+
+        format
+      - Scaler/0
+
+        compose selection rectangle
+      - Scaler/1
+
+        format
     * - Initial state
-      - 2048x1536/SGRBG8_1X8
+      - 2048x1536
+
+        SGRBG8_1X8
       - (default)
       - (default)
       - (default)
       - (default)
       - (default)
     * - Configure frontend sink format
-      - 2048x1536/SGRBG8_1X8
-      - *2048x1536/SGRBG8_1X8*
-      - *2046x1534/SGRBG8_1X8*
+      - 2048x1536
+
+        SGRBG8_1X8
+      - *2048x1536*
+
+        *SGRBG8_1X8*
+      - *2046x1534*
+
+        *SGRBG8_1X8*
       - (default)
       - (default)
       - (default)
     * - Configure scaler sink format
-      - 2048x1536/SGRBG8_1X8
-      - 2048x1536/SGRBG8_1X8
-      - 2046x1534/SGRBG8_1X8
-      - *2046x1534/SGRBG8_1X8*
+      - 2048x1536
+
+        SGRBG8_1X8
+      - 2048x1536
+
+        SGRBG8_1X8
+      - 2046x1534
+
+        SGRBG8_1X8
+      - *2046x1534*
+
+        *SGRBG8_1X8*
       - *0,0/2046x1534*
-      - *2046x1534/SGRBG8_1X8*
+      - *2046x1534*
+
+        *SGRBG8_1X8*
     * - Configure scaler sink compose selection
-      - 2048x1536/SGRBG8_1X8
-      - 2048x1536/SGRBG8_1X8
-      - 2046x1534/SGRBG8_1X8
-      - 2046x1534/SGRBG8_1X8
+      - 2048x1536
+
+        SGRBG8_1X8
+      - 2048x1536
+
+        SGRBG8_1X8
+      - 2046x1534
+
+        SGRBG8_1X8
+      - 2046x1534
+
+        SGRBG8_1X8
       - *0,0/1280x960*
-      - *1280x960/SGRBG8_1X8*
+      - *1280x960*
+
+        *SGRBG8_1X8*
 
 .. raw:: latex
 

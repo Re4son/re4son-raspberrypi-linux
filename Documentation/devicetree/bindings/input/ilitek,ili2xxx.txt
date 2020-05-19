@@ -23,4 +23,3 @@ Example:
 		interrupts = <7 IRQ_TYPE_EDGE_FALLING>;
 		reset-gpios = <&gpio5 21 GPIO_ACTIVE_LOW>;
 	};
-

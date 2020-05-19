@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # BCM2835 Platform Support
 snd-soc-bcm2835-i2s-objs := bcm2835-i2s.o
 
@@ -23,7 +24,7 @@ snd-soc-rpi-cirrus-objs := rpi-cirrus.o
 snd-soc-rpi-proto-objs := rpi-proto.o
 snd-soc-iqaudio-codec-objs := iqaudio-codec.o
 snd-soc-iqaudio-dac-objs := iqaudio-dac.o
-snd-soc-i-sabre-q2m-objs := i-sabre-q2m.o
+ snd-soc-i-sabre-q2m-objs := i-sabre-q2m.o
 snd-soc-audioinjector-pi-soundcard-objs := audioinjector-pi-soundcard.o
 snd-soc-audioinjector-octo-soundcard-objs := audioinjector-octo-soundcard.o
 snd-soc-audioinjector-isolated-soundcard-objs := audioinjector-isolated-soundcard.o
@@ -52,7 +53,7 @@ obj-$(CONFIG_SND_BCM2708_SOC_RPI_CIRRUS) += snd-soc-rpi-cirrus.o
 obj-$(CONFIG_SND_BCM2708_SOC_RPI_PROTO) += snd-soc-rpi-proto.o
 obj-$(CONFIG_SND_BCM2708_SOC_IQAUDIO_CODEC) += snd-soc-iqaudio-codec.o
 obj-$(CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC) += snd-soc-iqaudio-dac.o
-obj-$(CONFIG_SND_BCM2708_SOC_I_SABRE_Q2M) += snd-soc-i-sabre-q2m.o
+ obj-$(CONFIG_SND_BCM2708_SOC_I_SABRE_Q2M) += snd-soc-i-sabre-q2m.o
 obj-$(CONFIG_SND_AUDIOINJECTOR_PI_SOUNDCARD) += snd-soc-audioinjector-pi-soundcard.o
 obj-$(CONFIG_SND_AUDIOINJECTOR_OCTO_SOUNDCARD) += snd-soc-audioinjector-octo-soundcard.o
 obj-$(CONFIG_SND_AUDIOINJECTOR_ISOLATED_SOUNDCARD) += snd-soc-audioinjector-isolated-soundcard.o

@@ -1,11 +1,18 @@
-.. -*- coding: utf-8; mode: rst -*-
+.. Permission is granted to copy, distribute and/or modify this
+.. document under the terms of the GNU Free Documentation License,
+.. Version 1.1 or any later version published by the Free Software
+.. Foundation, with no Invariant Sections, no Front-Cover Texts
+.. and no Back-Cover Texts. A copy of the license is included at
+.. Documentation/media/uapi/fdl-appendix.rst.
+..
+.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
 
 .. _V4L2-PIX-FMT-NV12:
 .. _V4L2-PIX-FMT-NV21:
 
-******************************************************
-V4L2_PIX_FMT_NV12 ('NV12'), V4L2_PIX_FMT_NV21 ('NV21')
-******************************************************
+********************************************************************************
+V4L2_PIX_FMT_NV12 ('NV12'), V4L2_PIX_FMT_NV21 ('NV21'), V4L2_PIX_FMT_NV12_COL128
+********************************************************************************
 
 
 V4L2_PIX_FMT_NV21
@@ -30,6 +37,14 @@ with a Cr byte.
 
 If the Y plane has pad bytes after each row, then the CbCr plane has as
 many pad bytes after its rows.
+
+``V4L2_PIX_FMT_NV12_COL128`` is the tiled version of
+``V4L2_PIX_FMT_NV12`` with the image broken down into 128 pixel wide columns of
+Y followed by the associated combined CbCr plane.
+The normal bytesperline is effectively fixed at 128. However the format
+requires knowledge of the stride between columns, therefore the bytesperline
+value has been repurposed to denote the number of 128 byte long lines between
+the start of each column.
 
 **Byte Order.**
 Each cell is one byte.

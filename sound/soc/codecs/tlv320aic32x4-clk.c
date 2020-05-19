@@ -82,7 +82,7 @@ static int clk_aic32x4_pll_get_muldiv(struct clk_aic32x4 *pll,
 	int ret;
 
 	ret = regmap_read(pll->regmap, AIC32X4_PLLPR, &val);
-	if (ret)
+	if (ret < 0)
 		return ret;
 	settings->r = val & AIC32X4_PLL_R_MASK;
 	settings->p = (val & AIC32X4_PLL_P_MASK) >> AIC32X4_PLL_P_SHIFT;
@@ -165,8 +165,8 @@ static int clk_aic32x4_pll_calc_muldiv(struct clk_aic32x4_pll_muldiv *settings,
 	 * of the multiplier.	This is because we can't do floating point
 	 * math in the kernel.
 	 */
-	 multiplier = (u64) rate * settings->p * 10000;
-	 do_div(multiplier, parent_rate);
+	multiplier = (u64) rate * settings->p * 10000;
+	do_div(multiplier, parent_rate);
 
 	/*
 	 * J can't be over 64, so R can scale this.

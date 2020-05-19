@@ -182,7 +182,6 @@ static int bcm2835_wdt_probe(struct platform_device *pdev)
 	wdt = devm_kzalloc(dev, sizeof(struct bcm2835_wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
-	platform_set_drvdata(pdev, wdt);
 
 	spin_lock_init(&wdt->lock);
 
@@ -208,10 +207,8 @@ static int bcm2835_wdt_probe(struct platform_device *pdev)
 
 	watchdog_stop_on_reboot(&bcm2835_wdt_wdd);
 	err = devm_watchdog_register_device(dev, &bcm2835_wdt_wdd);
-	if (err) {
-		dev_err(dev, "Failed to register watchdog device");
+	if (err)
 		return err;
-	}
 
 	if (pm_power_off == NULL) {
 		pm_power_off = bcm2835_power_off;

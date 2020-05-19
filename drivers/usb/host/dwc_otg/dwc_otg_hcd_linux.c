@@ -138,7 +138,7 @@ static struct hc_driver dwc_otg_hc_driver = {
 
 	.irq = dwc_otg_hcd_irq,
 
-	.flags = HCD_MEMORY | HCD_USB2,
+	.flags = HCD_MEMORY | HCD_DMA | HCD_USB2,
 
 	//.reset =
 	.start = hcd_start,
@@ -864,7 +864,7 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 						   !(usb_pipein(urb->pipe))));
 
 	buf = urb->transfer_buffer;
-	if (hcd->self.uses_dma && !buf && urb->transfer_buffer_length) {
+	if (hcd_uses_dma(hcd) && !buf && urb->transfer_buffer_length) {
 		/*
 		 * Calculate virtual address from physical address,
 		 * because some class driver may not fill transfer_buffer.

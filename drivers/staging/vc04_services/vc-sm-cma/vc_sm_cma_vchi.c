@@ -34,7 +34,7 @@ struct sm_cmd_rsp_blk {
 	/* To be signaled when the response is there */
 	struct completion cmplt;
 
-	u16 id;
+	u32 id;
 	u16 length;
 
 	u8 msg[VC_SM_MAX_MSG_LEN];
@@ -320,16 +320,11 @@ struct sm_instance *vc_sm_cma_vchi_init(VCHI_INSTANCE_T vchi_instance,
 	/* Open the VCHI service connections */
 	instance->num_connections = num_connections;
 	for (i = 0; i < num_connections; i++) {
-		SERVICE_CREATION_T params = {
+		struct service_creation params = {
 			.version = VCHI_VERSION_EX(VC_SM_VER, VC_SM_MIN_VER),
 			.service_id = VC_SM_SERVER_NAME,
-			.rx_fifo_size = 0,
-			.tx_fifo_size = 0,
 			.callback = vc_sm_cma_vchi_callback,
 			.callback_param = instance,
-			.want_unaligned_bulk_rx = 0,
-			.want_unaligned_bulk_tx = 0,
-			.want_crc = 0
 		};
 
 		status = vchi_service_open(vchi_instance,

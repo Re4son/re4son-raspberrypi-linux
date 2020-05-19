@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2014-2015 Broadcom
  * Copyright (C) 2013 Red Hat
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /**
@@ -26,15 +23,21 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fb_helper.h>
+#include <drm/drm_vblank.h>
 
 #include "uapi/drm/vc4_drm.h"
+
 #include "vc4_drv.h"
 #include "vc4_regs.h"
 
@@ -76,28 +79,25 @@ static int vc4_get_param_ioctl(struct drm_device *dev, void *data,
 
 	switch (args->param) {
 	case DRM_VC4_PARAM_V3D_IDENT0:
-		ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
-		if (ret < 0)
+		ret = vc4_v3d_pm_get(vc4);
+		if (ret)
 			return ret;
 		args->value = V3D_READ(V3D_IDENT0);
-		pm_runtime_mark_last_busy(&vc4->v3d->pdev->dev);
-		pm_runtime_put_autosuspend(&vc4->v3d->pdev->dev);
+		vc4_v3d_pm_put(vc4);
 		break;
 	case DRM_VC4_PARAM_V3D_IDENT1:
-		ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
-		if (ret < 0)
+		ret = vc4_v3d_pm_get(vc4);
+		if (ret)
 			return ret;
 		args->value = V3D_READ(V3D_IDENT1);
-		pm_runtime_mark_last_busy(&vc4->v3d->pdev->dev);
-		pm_runtime_put_autosuspend(&vc4->v3d->pdev->dev);
+		vc4_v3d_pm_put(vc4);
 		break;
 	case DRM_VC4_PARAM_V3D_IDENT2:
-		ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
-		if (ret < 0)
+		ret = vc4_v3d_pm_get(vc4);
+		if (ret)
 			return ret;
 		args->value = V3D_READ(V3D_IDENT2);
-		pm_runtime_mark_last_busy(&vc4->v3d->pdev->dev);
-		pm_runtime_put_autosuspend(&vc4->v3d->pdev->dev);
+		vc4_v3d_pm_put(vc4);
 		break;
 	case DRM_VC4_PARAM_SUPPORTS_BRANCHES:
 	case DRM_VC4_PARAM_SUPPORTS_ETC1:
@@ -130,7 +130,11 @@ static int vc4_open(struct drm_device *dev, struct drm_file *file)
 
 static void vc4_close(struct drm_device *dev, struct drm_file *file)
 {
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_file *vc4file = file->driver_priv;
+
+	if (vc4file->bin_bo_used)
+		vc4_v3d_bin_bo_put(vc4);
 
 	vc4_perfmon_close_file(vc4file);
 	kfree(vc4file);
@@ -177,11 +181,8 @@ static struct drm_driver vc4_drm_driver = {
 	.driver_features = (DRIVER_MODESET |
 			    DRIVER_ATOMIC |
 			    DRIVER_GEM |
-			    DRIVER_HAVE_IRQ |
 			    DRIVER_RENDER |
-			    DRIVER_PRIME |
 			    DRIVER_SYNCOBJ),
-	.lastclose = drm_fb_helper_lastclose,
 	.open = vc4_open,
 	.postclose = vc4_close,
 	.irq_handler = vc4_irq,
@@ -202,9 +203,7 @@ static struct drm_driver vc4_drm_driver = {
 
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
-	.gem_prime_import = drm_gem_prime_import,
 	.gem_prime_export = vc4_prime_export,
-	.gem_prime_res_obj = vc4_prime_res_obj,
 	.gem_prime_get_sg_table	= drm_gem_cma_prime_get_sg_table,
 	.gem_prime_import_sg_table = vc4_prime_import_sg_table,
 	.gem_prime_vmap = vc4_prime_vmap,
@@ -241,32 +240,13 @@ static void vc4_match_add_drivers(struct device *dev,
 		struct device_driver *drv = &drivers[i]->driver;
 		struct device *p = NULL, *d;
 
-		while ((d = bus_find_device(&platform_bus_type, p, drv,
-					    (void *)platform_bus_type.match))) {
+		while ((d = platform_find_device_by_driver(p, drv))) {
 			put_device(p);
 			component_match_add(dev, match, compare_dev, d);
 			p = d;
 		}
 		put_device(p);
 	}
-}
-
-static void vc4_kick_out_firmware_fb(void)
-{
-	struct apertures_struct *ap;
-
-	ap = alloc_apertures(1);
-	if (!ap)
-		return;
-
-	/* Since VC4 is a UMA device, the simplefb node may have been
-	 * located anywhere in memory.
-	 */
-	ap->ranges[0].base = 0;
-	ap->ranges[0].size = ~0;
-
-	drm_fb_helper_remove_conflicting_framebuffers(ap, "vc4drmfb", false);
-	kfree(ap);
 }
 
 static int vc4_drm_bind(struct device *dev)
@@ -295,6 +275,9 @@ static int vc4_drm_bind(struct device *dev)
 	platform_set_drvdata(pdev, drm);
 	vc4->dev = drm;
 	drm->dev_private = vc4;
+	INIT_LIST_HEAD(&vc4->debugfs_list);
+
+	mutex_init(&vc4->bin_bo_lock);
 
 	ret = vc4_bo_cache_init(drm);
 	if (ret)
@@ -308,13 +291,23 @@ static int vc4_drm_bind(struct device *dev)
 	if (ret)
 		goto gem_destroy;
 
-	vc4_kick_out_firmware_fb();
+	if (!vc4->firmware_kms) {
+		ret = vc4_plane_create_additional_planes(drm);
+		if (ret)
+			goto unbind_all;
+	}
+
+	drm_fb_helper_remove_conflicting_framebuffers(NULL, "vc4drmfb", false);
+
+	ret = vc4_kms_load(drm);
+	if (ret < 0)
+		goto unbind_all;
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
 		goto unbind_all;
 
-	vc4_kms_load(drm);
+	drm_fbdev_generic_setup(drm, 16);
 
 	return 0;
 
@@ -335,10 +328,11 @@ static void vc4_drm_unbind(struct device *dev)
 
 	drm_dev_unregister(drm);
 
-	drm_fb_cma_fbdev_fini(drm);
+	drm_atomic_helper_shutdown(drm);
 
 	drm_mode_config_cleanup(drm);
 
+	drm_atomic_private_obj_fini(&vc4->load_tracker);
 	drm_atomic_private_obj_fini(&vc4->ctm_manager);
 
 	drm_dev_put(drm);
@@ -380,6 +374,7 @@ static int vc4_platform_drm_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id vc4_of_match[] = {
+	{ .compatible = "brcm,bcm2711-vc5", },
 	{ .compatible = "brcm,bcm2835-vc4", },
 	{ .compatible = "brcm,cygnus-vc4", },
 	{},

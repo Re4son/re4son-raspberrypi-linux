@@ -308,12 +308,6 @@ snd_bcm2835_pcm_pointer(struct snd_pcm_substream *substream)
 		runtime->delay = frames_output_in_interval_sized;
 	}
 
-	/* Give userspace better delay reporting by interpolating between GPU
-	 * notifications, assuming audio speed is close enough to the clock
-	 * used for ktime */
-	if (alsa_stream->interpolate_start && alsa_stream->interpolate_start < now)
-		runtime->delay = -(int)div_u64((now - alsa_stream->interpolate_start) * runtime->rate,  1000000000);
-
 	return snd_pcm_indirect_playback_pointer(substream,
 		&alsa_stream->pcm_indirect,
 		atomic_read(&alsa_stream->pos));

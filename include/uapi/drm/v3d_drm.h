@@ -56,6 +56,14 @@ extern "C" {
  *
  * This asks the kernel to have the GPU execute an optional binner
  * command list, and a render command list.
+ *
+ * The L1T, slice, L2C, L2T, and GCA caches will be flushed before
+ * each CL executes.  The VCD cache should be flushed (if necessary)
+ * by the submitted CLs.  The TLB writes are guaranteed to have been
+ * flushed by the time the render done IRQ happens, which is the
+ * trigger for out_sync.  Any dirtying of cachelines by the job (only
+ * possible using TMU writes) must be flushed by the caller using the
+ * CL's cache flush commands.
  */
 struct drm_v3d_submit_cl {
 	/* Pointer to the binner command list.
@@ -64,10 +72,15 @@ struct drm_v3d_submit_cl {
 	 * coordinate shader to determine where primitives land on the screen,
 	 * then writes out the state updates and draw calls necessary per tile
 	 * to the tile allocation BO.
+	 *
+	 * This BCL will block on any previous BCL submitted on the
+	 * same FD, but not on any RCL or BCLs submitted by other
+	 * clients -- that is left up to the submitter to control
+	 * using in_sync_bcl if necessary.
 	 */
 	__u32 bcl_start;
 
-	 /** End address of the BCL (first byte after the BCL) */
+	/** End address of the BCL (first byte after the BCL) */
 	__u32 bcl_end;
 
 	/* Offset of the render command list.
@@ -75,10 +88,15 @@ struct drm_v3d_submit_cl {
 	 * This is the second set of commands executed, which will either
 	 * execute the tiles that have been set up by the BCL, or a fixed set
 	 * of tiles (in the case of RCL-only blits).
+	 *
+	 * This RCL will block on this submit's BCL, and any previous
+	 * RCL submitted on the same FD, but not on any RCL or BCLs
+	 * submitted by other clients -- that is left up to the
+	 * submitter to control using in_sync_rcl if necessary.
 	 */
 	__u32 rcl_start;
 
-	 /** End address of the RCL (first byte after the RCL) */
+	/** End address of the RCL (first byte after the RCL) */
 	__u32 rcl_end;
 
 	/** An optional sync object to wait on before starting the BCL. */

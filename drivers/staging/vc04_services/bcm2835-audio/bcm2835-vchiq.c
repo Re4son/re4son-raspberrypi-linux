@@ -120,20 +120,13 @@ static void audio_vchi_callback(void *param,
 
 static int
 vc_vchi_audio_init(VCHI_INSTANCE_T vchi_instance,
-		   VCHI_CONNECTION_T *vchi_connection,
 		   struct bcm2835_audio_instance *instance)
 {
-	SERVICE_CREATION_T params = {
+	struct service_creation params = {
 		.version		= VCHI_VERSION_EX(VC_AUDIOSERV_VER, VC_AUDIOSERV_MIN_VER),
 		.service_id		= VC_AUDIO_SERVER_NAME,
-		.connection		= vchi_connection,
-		.rx_fifo_size		= 0,
-		.tx_fifo_size		= 0,
 		.callback		= audio_vchi_callback,
 		.callback_param		= instance,
-		.want_unaligned_bulk_rx = 1, //TODO: remove VCOS_FALSE
-		.want_unaligned_bulk_tx = 1, //TODO: remove VCOS_FALSE
-		.want_crc		= 0
 	};
 	int status;
 
@@ -184,7 +177,7 @@ int bcm2835_new_vchi_ctx(struct device *dev, struct bcm2835_vchi_ctx *vchi_ctx)
 		return -EIO;
 	}
 
-	ret = vchi_connect(NULL, 0, vchi_ctx->vchi_instance);
+	ret = vchi_connect(vchi_ctx->vchi_instance);
 	if (ret) {
 		dev_dbg(dev, "failed to connect VCHI instance (ret=%d)\n",
 			ret);
@@ -222,7 +215,6 @@ int bcm2835_audio_open(struct bcm2835_alsa_stream *alsa_stream)
 	alsa_stream->instance = instance;
 
 	err = vc_vchi_audio_init(vchi_ctx->vchi_instance,
-				 vchi_ctx->vchi_connection,
 				 instance);
 	if (err < 0)
 		goto free_instance;

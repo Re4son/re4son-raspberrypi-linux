@@ -53,7 +53,7 @@ static int audioinjector_octo_startup(struct snd_pcm_substream *substream)
 	rtd->cpu_dai->driver->capture.channels_min = 8;
 	rtd->cpu_dai->driver->capture.channels_max = 8;
 	rtd->codec_dai->driver->capture.channels_max = 8;
-	
+
 	snd_pcm_hw_constraint_list(substream->runtime, 0,
 				SNDRV_PCM_HW_PARAM_RATE,
 				&audioinjector_octo_constraints);
@@ -133,7 +133,7 @@ static int audioinjector_octo_hw_params(struct snd_pcm_substream *substream,
 
 static int audioinjector_octo_trigger(struct snd_pcm_substream *substream,
 								int cmd){
-	int mult[4];
+	DECLARE_BITMAP(mult, 4);
 
 	memset(mult, 0, sizeof(mult));
 
@@ -149,34 +149,34 @@ static int audioinjector_octo_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		switch (audioinjector_octo_rate) {
 		case 96000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 		case 88200:
-			mult[1] = 1;
-			mult[2] = 1;
+			__assign_bit(1, mult, 1);
+			__assign_bit(2, mult, 1);
 			break;
 		case 48000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 		case 44100:
-			mult[2] = 1;
+			__assign_bit(2, mult, 1);
 			break;
 		case 32000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 		case 29400:
-			mult[0] = 1;
-			mult[1] = 1;
+			__assign_bit(0, mult, 1);
+			__assign_bit(1, mult, 1);
 			break;
 		case 24000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 		case 22050:
-			mult[1] = 1;
+			__assign_bit(1, mult, 1);
 			break;
 		case 16000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 		case 14700:
-			mult[0] = 1;
+			__assign_bit(0, mult, 1);
 			break;
 		case 8000:
-			mult[3] = 1;
+			__assign_bit(3, mult, 1);
 			break;
 		default:
 			return -EINVAL;
@@ -186,7 +186,7 @@ static int audioinjector_octo_trigger(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 	gpiod_set_array_value_cansleep(mult_gpios->ndescs, mult_gpios->desc,
-									mult);
+				       NULL, mult);
 
 	return 0;
 }
@@ -198,15 +198,20 @@ static struct snd_soc_ops audioinjector_octo_ops = {
 	.trigger = audioinjector_octo_trigger,
 };
 
+SND_SOC_DAILINK_DEFS(audioinjector_octo,
+	DAILINK_COMP_ARRAY(COMP_EMPTY()),
+	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "cs42448")),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 static struct snd_soc_dai_link audioinjector_octo_dai[] = {
 	{
 		.name = "AudioInjector Octo",
 		.stream_name = "AudioInject-HIFI",
-		.codec_dai_name = "cs42448",
 		.ops = &audioinjector_octo_ops,
 		.init = audioinjector_octo_dai_init,
 		.symmetric_rates = 1,
 		.symmetric_channels = 1,
+		SND_SOC_DAILINK_REG(audioinjector_octo),
 	},
 };
 
@@ -290,12 +295,12 @@ static int audioinjector_octo_probe(struct platform_device *pdev)
 		msleep(500);
 
 		if (i2s_node && codec_node) {
-			dai->cpu_dai_name = NULL;
-			dai->cpu_of_node = i2s_node;
-			dai->platform_name = NULL;
-			dai->platform_of_node = i2s_node;
-			dai->codec_name = NULL;
-			dai->codec_of_node = codec_node;
+			dai->cpus->dai_name = NULL;
+			dai->cpus->of_node = i2s_node;
+			dai->platforms->name = NULL;
+			dai->platforms->of_node = i2s_node;
+			dai->codecs->name = NULL;
+			dai->codecs->of_node = codec_node;
 		} else
 			if (!i2s_node) {
 				dev_err(&pdev->dev,

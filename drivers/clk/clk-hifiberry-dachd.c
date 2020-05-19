@@ -269,7 +269,7 @@ static int clk_hifiberry_dachd_i2c_probe(struct i2c_client *i2c,
 
 	init.name = "clk-hifiberry-dachd";
 	init.ops = &clk_hifiberry_dachd_rate_ops;
-	init.flags = CLK_IS_BASIC;
+	init.flags = 0;
 	init.parent_names = NULL;
 	init.num_parents = 0;
 

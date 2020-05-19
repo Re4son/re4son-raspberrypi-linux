@@ -4,13 +4,14 @@
 #include "bcm2709-rpi.dtsi"
 #include "bcm283x-rpi-lan7515.dtsi"
 #include "bcm283x-rpi-csi1-2lane.dtsi"
+#include "bcm283x-rpi-i2c0mux_0_44.dtsi"
 
 / {
 	compatible = "raspberrypi,3-model-b-plus", "brcm,bcm2837";
 	model = "Raspberry Pi 3 Model B+";
 
 	chosen {
-		bootargs = "coherent_pool=1M 8250.nr_uarts=1";
+		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1 snd_bcm2835.enable_headphones=1";
 	};
 
 	aliases {
@@ -126,10 +127,12 @@
 	};
 };
 
-&i2c0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c0_pins>;
+&i2c0if {
 	clock-frequency = <100000>;
+};
+
+&i2c0mux {
+	pinctrl-0 = <&i2c0_pins>;
 };
 
 &i2c1 {
@@ -170,6 +173,12 @@
 	pinctrl-0 = <&audio_pins>;
 };
 
+&eth_phy {
+	microchip,eee-enabled;
+	microchip,tx-lpi-timer = <600>; /* non-aggressive*/
+	microchip,downshift-after = <2>;
+};
+
 / {
 	__overrides__ {
 		act_led_gpio = <&act_led>,"gpios:4";
@@ -179,5 +188,12 @@
 		pwr_led_gpio = <&pwr_led>,"gpios:4";
 		pwr_led_activelow = <&pwr_led>,"gpios:8";
 		pwr_led_trigger = <&pwr_led>,"linux,default-trigger";
+
+		eee = <&eth_phy>,"microchip,eee-enabled?";
+		tx_lpi_timer = <&eth_phy>,"microchip,tx-lpi-timer:0";
+		eth_led0 = <&eth_phy>,"microchip,led-modes:0";
+		eth_led1 = <&eth_phy>,"microchip,led-modes:4";
+		eth_downshift_after = <&eth_phy>,"microchip,downshift-after:0";
+		eth_max_speed = <&eth_phy>,"max-speed:0";
 	};
 };

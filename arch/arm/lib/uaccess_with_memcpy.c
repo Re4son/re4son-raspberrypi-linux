@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/lib/uaccess_with_memcpy.c
  *
  *  Written by: Lennert Buytenhek and Nicolas Pitre
  *  Copyright (C) 2009 Marvell Semiconductor
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -251,6 +248,32 @@ arm_copy_to_user(void __user *to, const void *from, unsigned long n)
 		n = __copy_to_user_memcpy(uaccess_mask_range_ptr(to, n),
 					  from, n);
 	}
+	return n;
+}
+
+unsigned long __must_check
+arm_copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+#ifdef CONFIG_BCM2835_FAST_MEMCPY
+	/*
+	 * This test is stubbed out of the main function above to keep
+	 * the overhead for small copies low by avoiding a large
+	 * register dump on the stack just to reload them right away.
+	 * With frame pointer disabled, tail call optimization kicks in
+	 * as well making this test almost invisible.
+	 */
+	if (n < COPY_TO_USER_THRESHOLD) {
+		unsigned long ua_flags = uaccess_save_and_enable();
+		n = __copy_from_user_std(to, from, n);
+		uaccess_restore(ua_flags);
+	} else {
+		n = __copy_from_user_memcpy(to, from, n);
+	}
+#else
+	unsigned long ua_flags = uaccess_save_and_enable();
+	n = __copy_from_user_std(to, from, n);
+	uaccess_restore(ua_flags);
+#endif
 	return n;
 }
 

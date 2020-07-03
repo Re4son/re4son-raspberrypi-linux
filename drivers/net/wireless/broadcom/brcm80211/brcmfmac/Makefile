@@ -9,6 +9,8 @@ ccflags-y += \
 	-I $(srctree)/$(src) \
 	-I $(srctree)/$(src)/../include
 
+ccflags-$(CONFIG_BRCMDBG) += -DDEBUG
+
 obj-$(CONFIG_BRCMFMAC) += brcmfmac.o
 brcmfmac-objs += \
 		cfg80211.o \

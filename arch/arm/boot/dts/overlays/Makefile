@@ -54,6 +54,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	gpio-ir.dtbo \
 	gpio-ir-tx.dtbo \
 	gpio-key.dtbo \
+	gpio-led.dtbo \
 	gpio-no-bank0-irq.dtbo \
 	gpio-no-irq.dtbo \
 	gpio-poweroff.dtbo \
@@ -118,6 +119,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	merus-amp.dtbo \
 	midi-uart0.dtbo \
 	midi-uart1.dtbo \
+	minipitft13.dtbo \
 	miniuart-bt.dtbo \
 	mmc.dtbo \
 	mpu6050.dtbo \
@@ -127,6 +129,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	ov9281.dtbo \
 	papirus.dtbo \
 	pca953x.dtbo \
+	pcie-32bit-dma.dtbo \
 	pibell.dtbo \
 	pifacedigital.dtbo \
 	pifi-40.dtbo \

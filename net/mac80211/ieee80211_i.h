@@ -973,6 +973,7 @@ struct ieee80211_sub_if_data {
 		struct ieee80211_if_ocb ocb;
 		struct ieee80211_if_mntr mntr;
 		struct ieee80211_if_nan nan;
+		u32 mntr_flags;
 	} u;
 
 #ifdef CONFIG_MAC80211_DEBUGFS

@@ -1,0 +1,4 @@
+#!/bin/bash
+modprobe i2c-bcm2708 
+modprobe i2c-dev
+./eepflash.sh -w -t=24c32 -f=24-hat_eeprom_settings.eep

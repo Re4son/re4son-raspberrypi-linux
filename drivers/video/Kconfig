@@ -35,6 +35,11 @@ config VIDEOMODE_HELPERS
 config HDMI
 	bool
 
+source "drivers/video/gen4-hats/Kconfig"
+if VT
+        source "drivers/video/console/Kconfig"
+endif
+
 endif # HAS_IOMEM
 
 if VT

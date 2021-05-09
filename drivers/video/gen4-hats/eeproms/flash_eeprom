@@ -1,0 +1,1 @@
+./eepflash.sh -w -t=24c32 -f=$1

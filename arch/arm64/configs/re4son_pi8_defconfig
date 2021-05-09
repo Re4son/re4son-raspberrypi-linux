@@ -1,5 +1,6 @@
 ### Re4son Kernel 5.4
-#CONFIG_LOCALVERSION="-Re4son-v8"
+CONFIG_LOCALVERSION="-Re4son-v8"
+CONFIG_BRCMDBG=y
 #### End Re4son config
 ##CONFIG_LOCALVERSION="-v8"
 # CONFIG_LOCALVERSION_AUTO is not set

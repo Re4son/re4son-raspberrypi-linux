@@ -1,7 +1,7 @@
 IMPORTANT - PLEASE READ:
 
 Beginning on November 4, 2019, I will NO LONGER support people that have downloaded the source
-as a zip file. Using git has much more flexibility. In addition, there is much less likelihood
+as a zip file. Using git has much more flexibility. In addition, there is much less liklihood
 that a user will contact me with a problem that is ALREADY fixed.
 
 If your system says that /lib/modules/...../build does not exist, you have not
@@ -45,12 +45,3 @@ Frequently asked Questions
 ### The network manager says: "Device is not ready"!
 Make sure you copied the firmware (rtl8188eufw.bin) to /lib/firmware/rtlwifi/
 
-### NetworkManager does not list SSID
-NetworkManager changes the Wi-Fi MAC address during scanning to improve privacy but this adapter does not support it. To address this issue, please create `/etc/NetworkManager/conf.d/80-wifi.conf` with content:
-
-```
-[device]
-wifi.scan-rand-mac-address=no
-```
-
-and run `systemctl restart NetworkManager`

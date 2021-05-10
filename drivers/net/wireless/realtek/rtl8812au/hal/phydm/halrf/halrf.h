@@ -29,26 +29,26 @@
 /*@============================================================*/
 /*@include files*/
 /*@============================================================*/
-#include "$(srctree)/$(src)/hal/phydm/halrf/halrf_psd.h"
+#include "halrf_psd.h"
 #if (RTL8822B_SUPPORT == 1)
-#include "halrf/rtl8822b/halrf_rfk_init_8822b.h"
+#include "rtl8822b/halrf_rfk_init_8822b.h"
 #endif
 #if (RTL8822C_SUPPORT == 1)
-#include "halrf/rtl8822c/halrf_rfk_init_8822c.h"
-#include "halrf/rtl8822c/halrf_iqk_8822c.h"
-#include "halrf/rtl8822c/halrf_tssi_8822c.h"
-#include "halrf/rtl8822c/halrf_dpk_8822c.h"
+#include "rtl8822c/halrf_rfk_init_8822c.h"
+#include "rtl8822c/halrf_iqk_8822c.h"
+#include "rtl8822c/halrf_tssi_8822c.h"
+#include "rtl8822c/halrf_dpk_8822c.h"
 #endif
 
 #if (DM_ODM_SUPPORT_TYPE & ODM_AP)
 #if (RTL8198F_SUPPORT == 1)
-#include "halrf/rtl8198f/halrf_rfk_init_8198f.h"
+#include "rtl8198f/halrf_rfk_init_8198f.h"
 #endif
 #endif
 
 #if (RTL8814B_SUPPORT == 1)
-#include "halrf/rtl8814b/halrf_rfk_init_8814b.h"
-#include "halrf/rtl8814b/halrf_iqk_8814b.h"
+#include "rtl8814b/halrf_rfk_init_8814b.h"
+#include "rtl8814b/halrf_iqk_8814b.h"
 #endif
 
 /*@============================================================*/

@@ -1,17 +1,24 @@
 /dts-v1/;
 
-#include "bcm2708.dtsi"
-#include "bcm2708-rpi.dtsi"
+#include "bcm2710.dtsi"
+#include "bcm2709-rpi.dtsi"
 #include "bcm283x-rpi-csi1-2lane.dtsi"
-#include "bcm283x-rpi-i2c0mux_0_28.dtsi"
+#include "bcm283x-rpi-i2c0mux_0_44.dtsi"
+#include "bcm2708-rpi-bt.dtsi"
 #include "bcm283x-rpi-cam1-regulator.dtsi"
 
 / {
-	compatible = "raspberrypi,model-zero", "brcm,bcm2835";
-	model = "Raspberry Pi Zero";
+	compatible = "raspberrypi,model-zero-2", "brcm,bcm2837";
+	model = "Raspberry Pi Zero 2";
 
 	chosen {
-		bootargs = "coherent_pool=1M snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1";
+		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1";
+	};
+
+	aliases {
+		serial0 = &uart1;
+		serial1 = &uart0;
+		mmc1 = &mmcnr;
 	};
 };
 
@@ -41,13 +48,52 @@
 		brcm,function = <4>; /* alt0 */
 	};
 
+	sdio_pins: sdio_pins {
+		brcm,pins =     <34 35 36 37 38 39>;
+		brcm,function = <7>; // alt3 = SD1
+		brcm,pull =     <0 2 2 2 2 2>;
+	};
+
+	bt_pins: bt_pins {
+		brcm,pins = <43>;
+		brcm,function = <4>; /* alt0:GPCLK2 */
+		brcm,pull = <0>;
+	};
+
+	uart0_pins: uart0_pins {
+		brcm,pins = <30 31 32 33>;
+		brcm,function = <7>; /* alt3=UART0 */
+		brcm,pull = <2 0 0 2>; /* up none none up */
+	};
+
+	uart1_pins: uart1_pins {
+		brcm,pins;
+		brcm,function;
+		brcm,pull;
+	};
+
 	audio_pins: audio_pins {
 		brcm,pins = <>;
 		brcm,function = <>;
 	};
 };
 
+&mmcnr {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_pins>;
+	bus-width = <4>;
+	status = "okay";
+};
+
 &uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins &bt_pins>;
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins>;
 	status = "okay";
 };
 
@@ -93,15 +139,15 @@
 };
 
 &leds {
-	act_led: act {
+	act_led: led-act {
 		label = "led0";
 		linux,default-trigger = "actpwr";
-		gpios = <&gpio 47 GPIO_ACTIVE_LOW>;
+		gpios = <&gpio 29 GPIO_ACTIVE_LOW>;
 	};
 };
 
 &hdmi {
-	hpd-gpios = <&gpio 46 GPIO_ACTIVE_LOW>;
+	hpd-gpios = <&gpio 28 GPIO_ACTIVE_LOW>;
 };
 
 &audio {
@@ -110,8 +156,16 @@
 	brcm,disable-headphones = <1>;
 };
 
+&bt {
+	shutdown-gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+};
+
+&minibt {
+	shutdown-gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+};
+
 &cam1_reg {
-	gpio = <&gpio 41 GPIO_ACTIVE_HIGH>;
+	gpio = <&gpio 40 GPIO_ACTIVE_HIGH>;
 };
 
 / {

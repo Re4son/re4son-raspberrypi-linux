@@ -2,15 +2,14 @@
 
 #include "bcm2710.dtsi"
 #include "bcm2709-rpi.dtsi"
-#include "bcm283x-rpi-lan7515.dtsi"
 #include "bcm283x-rpi-csi1-2lane.dtsi"
 #include "bcm283x-rpi-i2c0mux_0_44.dtsi"
-#include "bcm271x-rpi-bt.dtsi"
+#include "bcm2708-rpi-bt.dtsi"
 #include "bcm283x-rpi-cam1-regulator.dtsi"
 
 / {
-	compatible = "raspberrypi,3-model-b-plus", "brcm,bcm2837";
-	model = "Raspberry Pi 3 Model B+";
+	compatible = "raspberrypi,model-zero-2-w", "brcm,bcm2837";
+	model = "Raspberry Pi Zero 2 W";
 
 	chosen {
 		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1";
@@ -62,9 +61,9 @@
 	};
 
 	uart0_pins: uart0_pins {
-		brcm,pins = <32 33>;
+		brcm,pins = <30 31 32 33>;
 		brcm,function = <7>; /* alt3=UART0 */
-		brcm,pull = <0 2>;
+		brcm,pull = <2 0 0 2>; /* up none none up */
 	};
 
 	uart1_pins: uart1_pins {
@@ -74,8 +73,8 @@
 	};
 
 	audio_pins: audio_pins {
-		brcm,pins = <40 41>;
-		brcm,function = <4>;
+		brcm,pins = <>;
+		brcm,function = <>;
 	};
 };
 
@@ -90,15 +89,19 @@
 	brcmf: wifi@1 {
 		reg = <1>;
 		compatible = "brcm,bcm4329-fmac";
-	};
-};
 
-&firmware {
-	expgpio: expgpio {
-		compatible = "raspberrypi,firmware-gpio";
-		gpio-controller;
-		#gpio-cells = <2>;
-		status = "okay";
+		firmwares {
+			fw_43436p {
+				chipid = <43430>;
+				revmask = <4>;
+				fw_base = "brcm/brcmfmac43436-sdio";
+			};
+			fw_43436s {
+				chipid = <43430>;
+				revmask = <2>;
+				fw_base = "brcm/brcmfmac43436s-sdio";
+			};
+		};
 	};
 };
 
@@ -156,16 +159,10 @@
 };
 
 &leds {
-	act_led: act {
+	act_led: led-act {
 		label = "led0";
-		linux,default-trigger = "mmc0";
-		gpios = <&gpio 29 0>;
-	};
-
-	pwr_led: pwr {
-		label = "led1";
-		linux,default-trigger = "default-on";
-		gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
+		linux,default-trigger = "actpwr";
+		gpios = <&gpio 29 GPIO_ACTIVE_LOW>;
 	};
 };
 
@@ -176,16 +173,19 @@
 &audio {
 	pinctrl-names = "default";
 	pinctrl-0 = <&audio_pins>;
+	brcm,disable-headphones = <1>;
 };
 
-&eth_phy {
-	microchip,eee-enabled;
-	microchip,tx-lpi-timer = <600>; /* non-aggressive*/
-	microchip,downshift-after = <2>;
+&bt {
+	shutdown-gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+};
+
+&minibt {
+	shutdown-gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
 };
 
 &cam1_reg {
-	gpio = <&expgpio 5 GPIO_ACTIVE_HIGH>;
+	gpio = <&gpio 40 GPIO_ACTIVE_HIGH>;
 };
 
 / {
@@ -193,16 +193,5 @@
 		act_led_gpio = <&act_led>,"gpios:4";
 		act_led_activelow = <&act_led>,"gpios:8";
 		act_led_trigger = <&act_led>,"linux,default-trigger";
-
-		pwr_led_gpio = <&pwr_led>,"gpios:4";
-		pwr_led_activelow = <&pwr_led>,"gpios:8";
-		pwr_led_trigger = <&pwr_led>,"linux,default-trigger";
-
-		eee = <&eth_phy>,"microchip,eee-enabled?";
-		tx_lpi_timer = <&eth_phy>,"microchip,tx-lpi-timer:0";
-		eth_led0 = <&eth_phy>,"microchip,led-modes:0";
-		eth_led1 = <&eth_phy>,"microchip,led-modes:4";
-		eth_downshift_after = <&eth_phy>,"microchip,downshift-after:0";
-		eth_max_speed = <&eth_phy>,"max-speed:0";
 	};
 };

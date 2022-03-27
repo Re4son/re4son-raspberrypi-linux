@@ -7,6 +7,7 @@
 #ifndef __ASSEMBLY__
 #include <linux/mmdebug.h>
 #include <linux/bug.h>
+#include <linux/sizes.h>
 #endif
 
 /*
@@ -323,7 +324,8 @@ extern unsigned long pci_io_base;
 #define  PHB_IO_END	(KERN_IO_START + FULL_IO_SIZE)
 #define IOREMAP_BASE	(PHB_IO_END)
 #define IOREMAP_START	(ioremap_bot)
-#define IOREMAP_END	(KERN_IO_END)
+#define IOREMAP_END	(KERN_IO_END - FIXADDR_SIZE)
+#define FIXADDR_SIZE	SZ_32M
 
 /* Advertise special mapping type for AGP */
 #define HAVE_PAGE_AGP
@@ -1051,6 +1053,8 @@ static inline int map_kernel_page(unsigned long ea, unsigned long pa, pgprot_t p
 	}
 	return hash__map_kernel_page(ea, pa, prot);
 }
+
+void unmap_kernel_page(unsigned long va);
 
 static inline int __meminit vmemmap_create_mapping(unsigned long start,
 						   unsigned long page_size,

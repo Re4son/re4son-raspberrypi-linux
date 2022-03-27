@@ -310,16 +310,16 @@ static int vc4_plane_margins_adj(struct drm_plane_state *pstate)
 					       adjhdisplay,
 					       crtc_state->mode.hdisplay);
 	vc4_pstate->crtc_x += left;
-	if (vc4_pstate->crtc_x > crtc_state->mode.hdisplay - left)
-		vc4_pstate->crtc_x = crtc_state->mode.hdisplay - left;
+	if (vc4_pstate->crtc_x > crtc_state->mode.hdisplay - right)
+		vc4_pstate->crtc_x = crtc_state->mode.hdisplay - right;
 
 	adjvdisplay = crtc_state->mode.vdisplay - (top + bottom);
 	vc4_pstate->crtc_y = DIV_ROUND_CLOSEST(vc4_pstate->crtc_y *
 					       adjvdisplay,
 					       crtc_state->mode.vdisplay);
 	vc4_pstate->crtc_y += top;
-	if (vc4_pstate->crtc_y > crtc_state->mode.vdisplay - top)
-		vc4_pstate->crtc_y = crtc_state->mode.vdisplay - top;
+	if (vc4_pstate->crtc_y > crtc_state->mode.vdisplay - bottom)
+		vc4_pstate->crtc_y = crtc_state->mode.vdisplay - bottom;
 
 	vc4_pstate->crtc_w = DIV_ROUND_CLOSEST(vc4_pstate->crtc_w *
 					       adjhdisplay,
@@ -534,9 +534,6 @@ static void vc4_plane_calc_load(struct drm_plane_state *state)
 	struct vc4_dev *vc4;
 
 	vc4 = to_vc4_dev(state->plane->dev);
-	if (!vc4->load_tracker_available)
-		return;
-
 	vc4_state = to_vc4_plane_state(state);
 	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
 							state->crtc);
@@ -644,10 +641,10 @@ static const u32 colorspace_coeffs[2][DRM_COLOR_ENCODING_MAX][3] = {
 			SCALER_CSC1_ITR_R_709_3,
 			SCALER_CSC2_ITR_R_709_3,
 		}, {
-			/* BT2020. Not supported yet - copy 601 */
-			SCALER_CSC0_ITR_R_601_5,
-			SCALER_CSC1_ITR_R_601_5,
-			SCALER_CSC2_ITR_R_601_5,
+			/* BT2020 */
+			SCALER_CSC0_ITR_R_2020,
+			SCALER_CSC1_ITR_R_2020,
+			SCALER_CSC2_ITR_R_2020,
 		}
 	}, {
 		/* Full range */
@@ -662,13 +659,55 @@ static const u32 colorspace_coeffs[2][DRM_COLOR_ENCODING_MAX][3] = {
 			SCALER_CSC1_ITR_R_709_3_FR,
 			SCALER_CSC2_ITR_R_709_3_FR,
 		}, {
-			/* BT2020. Not supported yet - copy JFIF */
-			SCALER_CSC0_JPEG_JFIF,
-			SCALER_CSC1_JPEG_JFIF,
-			SCALER_CSC2_JPEG_JFIF,
+			/* BT2020 */
+			SCALER_CSC0_ITR_R_2020_FR,
+			SCALER_CSC1_ITR_R_2020_FR,
+			SCALER_CSC2_ITR_R_2020_FR,
 		}
 	}
 };
+
+static u32 vc4_hvs4_get_alpha_blend_mode(struct drm_plane_state *state)
+{
+	if (!state->fb->format->has_alpha)
+		return VC4_SET_FIELD(SCALER_POS2_ALPHA_MODE_FIXED,
+				     SCALER_POS2_ALPHA_MODE);
+
+	switch (state->pixel_blend_mode) {
+	case DRM_MODE_BLEND_PIXEL_NONE:
+		return VC4_SET_FIELD(SCALER_POS2_ALPHA_MODE_FIXED,
+				     SCALER_POS2_ALPHA_MODE);
+	default:
+	case DRM_MODE_BLEND_PREMULTI:
+		return VC4_SET_FIELD(SCALER_POS2_ALPHA_MODE_PIPELINE,
+				     SCALER_POS2_ALPHA_MODE) |
+			SCALER_POS2_ALPHA_PREMULT;
+	case DRM_MODE_BLEND_COVERAGE:
+		return VC4_SET_FIELD(SCALER_POS2_ALPHA_MODE_PIPELINE,
+				     SCALER_POS2_ALPHA_MODE);
+	}
+}
+
+static u32 vc4_hvs5_get_alpha_blend_mode(struct drm_plane_state *state)
+{
+	if (!state->fb->format->has_alpha)
+		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
+				     SCALER5_CTL2_ALPHA_MODE);
+
+	switch (state->pixel_blend_mode) {
+	case DRM_MODE_BLEND_PIXEL_NONE:
+		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
+				     SCALER5_CTL2_ALPHA_MODE);
+	default:
+	case DRM_MODE_BLEND_PREMULTI:
+		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
+				     SCALER5_CTL2_ALPHA_MODE) |
+			SCALER5_CTL2_ALPHA_PREMULT;
+	case DRM_MODE_BLEND_COVERAGE:
+		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
+				     SCALER5_CTL2_ALPHA_MODE);
+	}
+}
 
 /* Writes out a full display list for an active plane to the plane's
  * private dlist state.
@@ -931,13 +970,8 @@ static int vc4_plane_mode_set(struct drm_plane *plane,
 		/* Position Word 2: Source Image Size, Alpha */
 		vc4_state->pos2_offset = vc4_state->dlist_count;
 		vc4_dlist_write(vc4_state,
-				VC4_SET_FIELD(fb->format->has_alpha ?
-					      SCALER_POS2_ALPHA_MODE_PIPELINE :
-					      SCALER_POS2_ALPHA_MODE_FIXED,
-					      SCALER_POS2_ALPHA_MODE) |
 				(mix_plane_alpha ? SCALER_POS2_ALPHA_MIX : 0) |
-				(fb->format->has_alpha ?
-						SCALER_POS2_ALPHA_PREMULT : 0) |
+				vc4_hvs4_get_alpha_blend_mode(state) |
 				VC4_SET_FIELD(vc4_state->src_w[0],
 					      SCALER_POS2_WIDTH) |
 				VC4_SET_FIELD(vc4_state->src_h[0],
@@ -982,14 +1016,9 @@ static int vc4_plane_mode_set(struct drm_plane *plane,
 		vc4_dlist_write(vc4_state,
 				VC4_SET_FIELD(state->alpha >> 4,
 					      SCALER5_CTL2_ALPHA) |
-				(fb->format->has_alpha ?
-					SCALER5_CTL2_ALPHA_PREMULT : 0) |
+				vc4_hvs5_get_alpha_blend_mode(state) |
 				(mix_plane_alpha ?
-					SCALER5_CTL2_ALPHA_MIX : 0) |
-				VC4_SET_FIELD(fb->format->has_alpha ?
-				      SCALER5_CTL2_ALPHA_MODE_PIPELINE :
-				      SCALER5_CTL2_ALPHA_MODE_FIXED,
-				      SCALER5_CTL2_ALPHA_MODE)
+					SCALER5_CTL2_ALPHA_MIX : 0)
 			       );
 
 		/* Position Word 1: Scaled Image Dimensions. */
@@ -1229,7 +1258,6 @@ static void vc4_plane_atomic_async_update(struct drm_plane *plane,
 	plane->state->src_y = state->src_y;
 	plane->state->src_w = state->src_w;
 	plane->state->src_h = state->src_h;
-	plane->state->src_h = state->src_h;
 	plane->state->alpha = state->alpha;
 	plane->state->pixel_blend_mode = state->pixel_blend_mode;
 	plane->state->rotation = state->rotation;
@@ -1366,11 +1394,6 @@ static const struct drm_plane_helper_funcs vc4_plane_helper_funcs = {
 	.atomic_async_update = vc4_plane_atomic_async_update,
 };
 
-static void vc4_plane_destroy(struct drm_plane *plane)
-{
-	drm_plane_cleanup(plane);
-}
-
 static bool vc4_format_mod_supported(struct drm_plane *plane,
 				     uint32_t format,
 				     uint64_t modifier)
@@ -1428,7 +1451,7 @@ static bool vc4_format_mod_supported(struct drm_plane *plane,
 static const struct drm_plane_funcs vc4_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = vc4_plane_destroy,
+	.destroy = drm_plane_cleanup,
 	.set_property = NULL,
 	.reset = vc4_plane_reset,
 	.atomic_duplicate_state = vc4_plane_duplicate_state,
@@ -1479,6 +1502,10 @@ struct drm_plane *vc4_plane_init(struct drm_device *dev,
 	drm_plane_helper_add(plane, &vc4_plane_helper_funcs);
 
 	drm_plane_create_alpha_property(plane);
+	drm_plane_create_blend_mode_property(plane,
+					     BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					     BIT(DRM_MODE_BLEND_PREMULTI) |
+					     BIT(DRM_MODE_BLEND_COVERAGE));
 	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
 					   DRM_MODE_ROTATE_0 |
 					   DRM_MODE_ROTATE_180 |
@@ -1487,7 +1514,8 @@ struct drm_plane *vc4_plane_init(struct drm_device *dev,
 
 	drm_plane_create_color_properties(plane,
 					  BIT(DRM_COLOR_YCBCR_BT601) |
-					  BIT(DRM_COLOR_YCBCR_BT709),
+					  BIT(DRM_COLOR_YCBCR_BT709) |
+					  BIT(DRM_COLOR_YCBCR_BT2020),
 					  BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) |
 					  BIT(DRM_COLOR_YCBCR_FULL_RANGE),
 					  DRM_COLOR_YCBCR_BT709,

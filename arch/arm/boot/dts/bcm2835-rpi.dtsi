@@ -4,7 +4,7 @@
 	leds {
 		compatible = "gpio-leds";
 
-		act {
+		led-act {
 			label = "ACT";
 			default-state = "keep";
 			linux,default-trigger = "heartbeat";
@@ -74,6 +74,10 @@
 
 &usb {
 	power-domains = <&power RPI_POWER_DOMAIN_USB>;
+};
+
+&vc4 {
+	raspberrypi,firmware = <&firmware>;
 };
 
 &vec {

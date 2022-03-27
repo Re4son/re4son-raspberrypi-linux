@@ -77,12 +77,14 @@ struct clk_core {
 	unsigned int		protect_count;
 	unsigned long		min_rate;
 	unsigned long		max_rate;
+	unsigned long		default_request_rate;
 	unsigned long		accuracy;
 	int			phase;
 	struct clk_duty		duty;
 	struct hlist_head	children;
 	struct hlist_node	child_node;
 	struct hlist_head	clks;
+	struct list_head	pending_requests;
 	unsigned int		notifier_count;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry		*dentry;
@@ -103,6 +105,12 @@ struct clk {
 	unsigned long max_rate;
 	unsigned int exclusive_count;
 	struct hlist_node clks_node;
+};
+
+struct clk_request {
+	struct list_head list;
+	struct clk *clk;
+	unsigned long rate;
 };
 
 /***           runtime pm          ***/
@@ -1308,6 +1316,8 @@ static int clk_core_determine_round_nolock(struct clk_core *core,
 	if (!core)
 		return 0;
 
+	req->rate = clamp(req->rate, req->min_rate, req->max_rate);
+
 	/*
 	 * At this point, core protection will be disabled if
 	 * - if the provider is not protected at all
@@ -1413,9 +1423,13 @@ unsigned long clk_hw_round_rate(struct clk_hw *hw, unsigned long rate)
 {
 	int ret;
 	struct clk_rate_request req;
+	struct clk_request *clk_req;
 
 	clk_core_get_boundaries(hw->core, &req.min_rate, &req.max_rate);
 	req.rate = rate;
+
+	list_for_each_entry(clk_req, &hw->core->pending_requests, list)
+		req.min_rate = max(clk_req->rate, req.min_rate);
 
 	ret = clk_core_round_rate_nolock(hw->core, &req);
 	if (ret)
@@ -1437,6 +1451,7 @@ EXPORT_SYMBOL_GPL(clk_hw_round_rate);
 long clk_round_rate(struct clk *clk, unsigned long rate)
 {
 	struct clk_rate_request req;
+	struct clk_request *clk_req;
 	int ret;
 
 	if (!clk)
@@ -1449,6 +1464,9 @@ long clk_round_rate(struct clk *clk, unsigned long rate)
 
 	clk_core_get_boundaries(clk->core, &req.min_rate, &req.max_rate);
 	req.rate = rate;
+
+	list_for_each_entry(clk_req, &clk->core->pending_requests, list)
+		req.min_rate = max(clk_req->rate, req.min_rate);
 
 	ret = clk_core_round_rate_nolock(clk->core, &req);
 
@@ -1917,6 +1935,7 @@ static struct clk_core *clk_calc_new_rates(struct clk_core *core,
 	unsigned long new_rate;
 	unsigned long min_rate;
 	unsigned long max_rate;
+	struct clk_request *req;
 	int p_index = 0;
 	long ret;
 
@@ -1930,6 +1949,9 @@ static struct clk_core *clk_calc_new_rates(struct clk_core *core,
 		best_parent_rate = parent->rate;
 
 	clk_core_get_boundaries(core, &min_rate, &max_rate);
+
+	list_for_each_entry(req, &core->pending_requests, list)
+		min_rate = max(req->rate, min_rate);
 
 	/* find the closest rate and parent clk/rate */
 	if (clk_core_can_round(core)) {
@@ -2135,6 +2157,7 @@ static unsigned long clk_core_req_round_rate_nolock(struct clk_core *core,
 {
 	int ret, cnt;
 	struct clk_rate_request req;
+	struct clk_request *clk_req;
 
 	lockdep_assert_held(&prepare_lock);
 
@@ -2148,6 +2171,9 @@ static unsigned long clk_core_req_round_rate_nolock(struct clk_core *core,
 
 	clk_core_get_boundaries(core, &req.min_rate, &req.max_rate);
 	req.rate = req_rate;
+
+	list_for_each_entry(clk_req, &core->pending_requests, list)
+		req.min_rate = max(clk_req->rate, req.min_rate);
 
 	ret = clk_core_round_rate_nolock(core, &req);
 
@@ -2241,6 +2267,9 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 		clk_core_rate_unprotect(clk->core);
 
 	ret = clk_core_set_rate_nolock(clk->core, rate);
+
+	if (!list_empty(&clk->core->pending_requests))
+		clk->core->default_request_rate = rate;
 
 	if (clk->exclusive_count)
 		clk_core_rate_protect(clk->core);
@@ -2400,6 +2429,103 @@ int clk_set_max_rate(struct clk *clk, unsigned long rate)
 	return clk_set_rate_range(clk, clk->min_rate, rate);
 }
 EXPORT_SYMBOL_GPL(clk_set_max_rate);
+
+/**
+ * clk_request_start - Request a rate to be enforced temporarily
+ * @clk: the clk to act on
+ * @rate: the new rate asked for
+ *
+ * This function will create a request to temporarily increase the rate
+ * of the clock to a given rate to a certain minimum.
+ *
+ * This is meant as a best effort mechanism and while the rate of the
+ * clock will be guaranteed to be equal or higher than the requested
+ * rate, there's none on what the actual rate will be due to other
+ * factors (other requests previously set, clock boundaries, etc.).
+ *
+ * Once the request is marked as done through clk_request_done(), the
+ * rate will be reverted back to what the rate was before the request.
+ *
+ * The reported boundaries of the clock will also be adjusted so that
+ * clk_round_rate() take those requests into account. A call to
+ * clk_set_rate() during a request will affect the rate the clock will
+ * return to after the requests on that clock are done.
+ *
+ * Returns 0 on success, an ERR_PTR otherwise.
+ */
+struct clk_request *clk_request_start(struct clk *clk, unsigned long rate)
+{
+	struct clk_request *req;
+	int ret;
+
+	if (!clk)
+		return ERR_PTR(-EINVAL);
+
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	if (!req)
+		return ERR_PTR(-ENOMEM);
+
+	clk_prepare_lock();
+
+	req->clk = clk;
+	req->rate = rate;
+
+	if (list_empty(&clk->core->pending_requests))
+		clk->core->default_request_rate = clk_core_get_rate_recalc(clk->core);
+
+	ret = clk_core_set_rate_nolock(clk->core, rate);
+	if (ret) {
+		clk_prepare_unlock();
+		kfree(req);
+		return ERR_PTR(ret);
+	}
+
+	list_add_tail(&req->list, &clk->core->pending_requests);
+	clk_prepare_unlock();
+
+	return req;
+}
+EXPORT_SYMBOL_GPL(clk_request_start);
+
+/**
+ * clk_request_done - Mark a clk_request as done
+ * @req: the request to mark done
+ *
+ * This function will remove the rate request from the clock and adjust
+ * the clock rate back to either to what it was before the request
+ * started, or if there's any other request on that clock to a proper
+ * rate for them.
+ */
+void clk_request_done(struct clk_request *req)
+{
+	struct clk_core *core;
+
+	if (!req)
+		return;
+	core = req->clk->core;
+
+	clk_prepare_lock();
+
+	list_del(&req->list);
+
+	if (list_empty(&core->pending_requests)) {
+		clk_core_set_rate_nolock(core, core->default_request_rate);
+		core->default_request_rate = 0;
+	} else {
+		struct clk_request *cur_req;
+		unsigned long new_rate = 0;
+
+		list_for_each_entry(cur_req, &core->pending_requests, list)
+			new_rate = max(new_rate, cur_req->rate);
+
+		clk_core_set_rate_nolock(core, new_rate);
+	}
+
+	clk_prepare_unlock();
+
+	kfree(req);
+}
+EXPORT_SYMBOL_GPL(clk_request_done);
 
 /**
  * clk_get_parent - return the parent of a clk
@@ -3314,6 +3440,24 @@ static int __init clk_debug_init(void)
 {
 	struct clk_core *core;
 
+#ifdef CLOCK_ALLOW_WRITE_DEBUGFS
+	pr_warn("\n");
+	pr_warn("********************************************************************\n");
+	pr_warn("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE           **\n");
+	pr_warn("**                                                                **\n");
+	pr_warn("**  WRITEABLE clk DebugFS SUPPORT HAS BEEN ENABLED IN THIS KERNEL **\n");
+	pr_warn("**                                                                **\n");
+	pr_warn("** This means that this kernel is built to expose clk operations  **\n");
+	pr_warn("** such as parent or rate setting, enabling, disabling, etc.      **\n");
+	pr_warn("** to userspace, which may compromise security on your system.    **\n");
+	pr_warn("**                                                                **\n");
+	pr_warn("** If you see this message and you are not debugging the          **\n");
+	pr_warn("** kernel, report this immediately to your vendor!                **\n");
+	pr_warn("**                                                                **\n");
+	pr_warn("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE           **\n");
+	pr_warn("********************************************************************\n");
+#endif
+
 	rootdir = debugfs_create_dir("clk", NULL);
 
 	debugfs_create_file("clk_summary", 0444, rootdir, &all_lists,
@@ -3388,6 +3532,14 @@ static int __clk_core_init(struct clk_core *core)
 		return -EINVAL;
 
 	clk_prepare_lock();
+
+	/*
+	 * Set hw->core after grabbing the prepare_lock to synchronize with
+	 * callers of clk_core_fill_parent_index() where we treat hw->core
+	 * being NULL as the clk not being registered yet. This is crucial so
+	 * that clks aren't parented until their parent is fully registered.
+	 */
+	core->hw->core = core;
 
 	ret = clk_pm_runtime_get(core);
 	if (ret)
@@ -3557,8 +3709,10 @@ static int __clk_core_init(struct clk_core *core)
 out:
 	clk_pm_runtime_put(core);
 unlock:
-	if (ret)
+	if (ret) {
 		hlist_del_init(&core->child_node);
+		core->hw->core = NULL;
+	}
 
 	clk_prepare_unlock();
 
@@ -3804,13 +3958,13 @@ __clk_register(struct device *dev, struct device_node *np, struct clk_hw *hw)
 	core->num_parents = init->num_parents;
 	core->min_rate = 0;
 	core->max_rate = ULONG_MAX;
-	hw->core = core;
 
 	ret = clk_core_populate_parent_map(core, init);
 	if (ret)
 		goto fail_parents;
 
 	INIT_HLIST_HEAD(&core->clks);
+	INIT_LIST_HEAD(&core->pending_requests);
 
 	/*
 	 * Don't call clk_hw_create_clk() here because that would pin the
@@ -3822,7 +3976,7 @@ __clk_register(struct device *dev, struct device_node *np, struct clk_hw *hw)
 		goto fail_create_clk;
 	}
 
-	clk_core_link_consumer(hw->core, hw->clk);
+	clk_core_link_consumer(core, hw->clk);
 
 	ret = __clk_core_init(core);
 	if (!ret)
@@ -4262,20 +4416,19 @@ int clk_notifier_register(struct clk *clk, struct notifier_block *nb)
 	/* search the list of notifiers for this clk */
 	list_for_each_entry(cn, &clk_notifier_list, node)
 		if (cn->clk == clk)
-			break;
+			goto found;
 
 	/* if clk wasn't in the notifier list, allocate new clk_notifier */
-	if (cn->clk != clk) {
-		cn = kzalloc(sizeof(*cn), GFP_KERNEL);
-		if (!cn)
-			goto out;
+	cn = kzalloc(sizeof(*cn), GFP_KERNEL);
+	if (!cn)
+		goto out;
 
-		cn->clk = clk;
-		srcu_init_notifier_head(&cn->notifier_head);
+	cn->clk = clk;
+	srcu_init_notifier_head(&cn->notifier_head);
 
-		list_add(&cn->node, &clk_notifier_list);
-	}
+	list_add(&cn->node, &clk_notifier_list);
 
+found:
 	ret = srcu_notifier_chain_register(&cn->notifier_head, nb);
 
 	clk->core->notifier_count++;
@@ -4300,32 +4453,28 @@ EXPORT_SYMBOL_GPL(clk_notifier_register);
  */
 int clk_notifier_unregister(struct clk *clk, struct notifier_block *nb)
 {
-	struct clk_notifier *cn = NULL;
-	int ret = -EINVAL;
+	struct clk_notifier *cn;
+	int ret = -ENOENT;
 
 	if (!clk || !nb)
 		return -EINVAL;
 
 	clk_prepare_lock();
 
-	list_for_each_entry(cn, &clk_notifier_list, node)
-		if (cn->clk == clk)
+	list_for_each_entry(cn, &clk_notifier_list, node) {
+		if (cn->clk == clk) {
+			ret = srcu_notifier_chain_unregister(&cn->notifier_head, nb);
+
+			clk->core->notifier_count--;
+
+			/* XXX the notifier code should handle this better */
+			if (!cn->notifier_head.head) {
+				srcu_cleanup_notifier_head(&cn->notifier_head);
+				list_del(&cn->node);
+				kfree(cn);
+			}
 			break;
-
-	if (cn->clk == clk) {
-		ret = srcu_notifier_chain_unregister(&cn->notifier_head, nb);
-
-		clk->core->notifier_count--;
-
-		/* XXX the notifier code should handle this better */
-		if (!cn->notifier_head.head) {
-			srcu_cleanup_notifier_head(&cn->notifier_head);
-			list_del(&cn->node);
-			kfree(cn);
 		}
-
-	} else {
-		ret = -ENOENT;
 	}
 
 	clk_prepare_unlock();

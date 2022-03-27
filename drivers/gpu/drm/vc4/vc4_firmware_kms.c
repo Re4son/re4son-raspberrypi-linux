@@ -458,15 +458,15 @@ static int vc4_fkms_margins_adj(struct drm_plane_state *pstate,
 	plane->dst_x = DIV_ROUND_CLOSEST(plane->dst_x * adjhdisplay,
 					 (int)crtc_state->mode.hdisplay);
 	plane->dst_x += left;
-	if (plane->dst_x > (int)(crtc_state->mode.hdisplay - left))
-		plane->dst_x = crtc_state->mode.hdisplay - left;
+	if (plane->dst_x > (int)(crtc_state->mode.hdisplay - right))
+		plane->dst_x = crtc_state->mode.hdisplay - right;
 
 	adjvdisplay = crtc_state->mode.vdisplay - (top + bottom);
 	plane->dst_y = DIV_ROUND_CLOSEST(plane->dst_y * adjvdisplay,
 					 (int)crtc_state->mode.vdisplay);
 	plane->dst_y += top;
-	if (plane->dst_y > (int)(crtc_state->mode.vdisplay - top))
-		plane->dst_y = crtc_state->mode.vdisplay - top;
+	if (plane->dst_y > (int)(crtc_state->mode.vdisplay - bottom))
+		plane->dst_y = crtc_state->mode.vdisplay - bottom;
 
 	plane->dst_w = DIV_ROUND_CLOSEST(plane->dst_w * adjhdisplay,
 					 crtc_state->mode.hdisplay);
@@ -1549,6 +1549,34 @@ int vc4_connector_atomic_set_property(struct drm_connector *connector,
 	return -EINVAL;
 }
 
+int vc4_connector_atomic_check(struct drm_connector *connector,
+			       struct drm_atomic_state *state)
+{
+	struct drm_connector_state *old_state =
+		drm_atomic_get_old_connector_state(state, connector);
+	struct vc4_fkms_connector_state *vc4_old_state =
+					to_vc4_fkms_connector_state(old_state);
+	struct drm_connector_state *new_state =
+		drm_atomic_get_new_connector_state(state, connector);
+	struct vc4_fkms_connector_state *vc4_new_state =
+					to_vc4_fkms_connector_state(new_state);
+	struct drm_crtc *crtc = new_state->crtc;
+
+	if (!crtc)
+		return 0;
+
+	if (vc4_old_state->broadcast_rgb != vc4_new_state->broadcast_rgb) {
+		struct drm_crtc_state *crtc_state;
+
+		crtc_state = drm_atomic_get_crtc_state(state, crtc);
+		if (IS_ERR(crtc_state))
+			return PTR_ERR(crtc_state);
+
+		crtc_state->mode_changed = true;
+	}
+	return 0;
+}
+
 static void vc4_hdmi_connector_reset(struct drm_connector *connector)
 {
 	drm_atomic_helper_connector_reset(connector);
@@ -1569,6 +1597,7 @@ static const struct drm_connector_funcs vc4_fkms_connector_funcs = {
 static const struct drm_connector_helper_funcs vc4_fkms_connector_helper_funcs = {
 	.get_modes = vc4_fkms_connector_get_modes,
 	.best_encoder = vc4_fkms_connector_best_encoder,
+	.atomic_check = vc4_connector_atomic_check,
 };
 
 static const struct drm_connector_helper_funcs vc4_fkms_lcd_conn_helper_funcs = {

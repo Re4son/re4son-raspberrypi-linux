@@ -1155,7 +1155,8 @@ error:
 }
 
 static
-int brcmf_usb_get_fwname(struct device *dev, const char *ext, u8 *fw_name)
+int brcmf_usb_get_fwname(struct device *dev, const char *ext, u8 *fw_name,
+			 bool board_specific)
 {
 	struct brcmf_bus *bus = dev_get_drvdata(dev);
 	struct brcmf_fw_request *fwreq;
@@ -1163,6 +1164,10 @@ int brcmf_usb_get_fwname(struct device *dev, const char *ext, u8 *fw_name)
 		{ ext, fw_name },
 	};
 
+	if (board_specific) {
+		fw_name[0] = 0;
+		return 0;
+	}
 	fwreq = brcmf_fw_alloc_request(bus->chip, bus->chiprev,
 				       brcmf_usb_fwnames,
 				       ARRAY_SIZE(brcmf_usb_fwnames),
@@ -1584,12 +1589,8 @@ void brcmf_usb_exit(void)
 	usb_deregister(&brcmf_usbdrvr);
 }
 
-void brcmf_usb_register(void)
+int brcmf_usb_register(void)
 {
-	int ret;
-
 	brcmf_dbg(USB, "Enter\n");
-	ret = usb_register(&brcmf_usbdrvr);
-	if (ret)
-		brcmf_err("usb_register failed %d\n", ret);
+	return usb_register(&brcmf_usbdrvr);
 }

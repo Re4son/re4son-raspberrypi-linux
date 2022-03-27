@@ -12,6 +12,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
@@ -20,12 +21,21 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mediabus.h>
 
+static int dpc_enable = 1;
+module_param(dpc_enable, int, 0644);
+MODULE_PARM_DESC(dpc_enable, "Enable on-sensor DPC");
+
+static int trigger_mode;
+module_param(trigger_mode, int, 0644);
+MODULE_PARM_DESC(trigger_mode, "Set vsync trigger mode: 1=source, 2=sink");
+
 #define IMX477_REG_VALUE_08BIT		1
 #define IMX477_REG_VALUE_16BIT		2
 
 /* Chip ID */
 #define IMX477_REG_CHIP_ID		0x0016
 #define IMX477_CHIP_ID			0x0477
+#define IMX378_CHIP_ID			0x0378
 
 #define IMX477_REG_MODE_SELECT		0x0100
 #define IMX477_MODE_STANDBY		0x00
@@ -91,6 +101,12 @@
 #define IMX477_TEST_PATTERN_GR_DEFAULT	0
 #define IMX477_TEST_PATTERN_B_DEFAULT	0
 #define IMX477_TEST_PATTERN_GB_DEFAULT	0
+
+/* Trigger mode */
+#define IMX477_REG_MC_MODE		0x3f0b
+#define IMX477_REG_MS_SEL		0x3041
+#define IMX477_REG_XVS_IO_CTRL		0x3040
+#define IMX477_REG_EXTOUT_EN		0x4b81
 
 /* Embedded metadata stream structure */
 #define IMX477_EMBEDDED_LINE_WIDTH 16384
@@ -980,7 +996,7 @@ static const struct imx477_mode supported_modes_10bit[] = {
 		/* 120fps. 2x2 binned and cropped */
 		.width = 1332,
 		.height = 990,
-		.line_length_pix = 0x1460,
+		.line_length_pix = 6664,
 		.crop = {
 			/*
 			 * FIXME: the analog crop rectangle is actually
@@ -1069,6 +1085,11 @@ static const char * const imx477_supply_name[] = {
 #define IMX477_XCLR_MIN_DELAY_US	8000
 #define IMX477_XCLR_DELAY_RANGE_US	1000
 
+struct imx477_compatible_data {
+	unsigned int chip_id;
+	struct imx477_reg_list extra_regs;
+};
+
 struct imx477 {
 	struct v4l2_subdev sd;
 	struct media_pad pad[NUM_PADS];
@@ -1107,6 +1128,9 @@ struct imx477 {
 
 	/* Current long exposure factor in use. Set through V4L2_CID_VBLANK */
 	unsigned int long_exp_shift;
+
+	/* Any extra information related to different compatible sensors */
+	const struct imx477_compatible_data *compatible_data;
 };
 
 static inline struct imx477 *to_imx477(struct v4l2_subdev *_sd)
@@ -1282,7 +1306,7 @@ static void imx477_adjust_exposure_range(struct imx477 *imx477)
 
 	/* Honour the VBLANK limits when setting exposure. */
 	exposure_max = imx477->mode->height + imx477->vblank->val -
-		       (IMX477_EXPOSURE_OFFSET << imx477->long_exp_shift);
+		       IMX477_EXPOSURE_OFFSET;
 	exposure_def = min(exposure_max, imx477->exposure->val);
 	__v4l2_ctrl_modify_range(imx477->exposure, imx477->exposure->minimum,
 				 exposure_max, imx477->exposure->step,
@@ -1457,7 +1481,7 @@ static int imx477_enum_frame_size(struct v4l2_subdev *sd,
 
 static void imx477_reset_colorspace(struct v4l2_mbus_framefmt *fmt)
 {
-	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+	fmt->colorspace = V4L2_COLORSPACE_RAW;
 	fmt->ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(fmt->colorspace);
 	fmt->quantization = V4L2_MAP_QUANTIZATION_DEFAULT(true,
 							  fmt->colorspace,
@@ -1673,11 +1697,18 @@ static int imx477_start_streaming(struct imx477 *imx477)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx477->sd);
 	const struct imx477_reg_list *reg_list;
+	const struct imx477_reg_list *extra_regs;
 	int ret;
 
 	if (!imx477->common_regs_written) {
 		ret = imx477_write_regs(imx477, mode_common_regs,
 					ARRAY_SIZE(mode_common_regs));
+		if (!ret) {
+			extra_regs = &imx477->compatible_data->extra_regs;
+			ret = imx477_write_regs(imx477,	extra_regs->regs,
+						extra_regs->num_of_regs);
+		}
+
 		if (ret) {
 			dev_err(&client->dev, "%s failed to set common settings\n",
 				__func__);
@@ -1692,6 +1723,25 @@ static int imx477_start_streaming(struct imx477 *imx477)
 	if (ret) {
 		dev_err(&client->dev, "%s failed to set mode\n", __func__);
 		return ret;
+	}
+
+	/* Set on-sensor DPC. */
+	imx477_write_reg(imx477, 0x0b05, IMX477_REG_VALUE_08BIT, !!dpc_enable);
+	imx477_write_reg(imx477, 0x0b06, IMX477_REG_VALUE_08BIT, !!dpc_enable);
+
+	/* Set vsync trigger mode */
+	if (trigger_mode != 0) {
+		/* trigger_mode == 1 for source, 2 for sink */
+		const u32 val = (trigger_mode == 1) ? 1 : 0;
+
+		imx477_write_reg(imx477, IMX477_REG_MC_MODE,
+				 IMX477_REG_VALUE_08BIT, 1);
+		imx477_write_reg(imx477, IMX477_REG_MS_SEL,
+				 IMX477_REG_VALUE_08BIT, val);
+		imx477_write_reg(imx477, IMX477_REG_XVS_IO_CTRL,
+				 IMX477_REG_VALUE_08BIT, val);
+		imx477_write_reg(imx477, IMX477_REG_EXTOUT_EN,
+				 IMX477_REG_VALUE_08BIT, val);
 	}
 
 	/* Apply customized values from user */
@@ -1863,7 +1913,7 @@ static int imx477_get_regulators(struct imx477 *imx477)
 }
 
 /* Verify chip ID */
-static int imx477_identify_module(struct imx477 *imx477)
+static int imx477_identify_module(struct imx477 *imx477, u32 expected_id)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx477->sd);
 	int ret;
@@ -1873,15 +1923,17 @@ static int imx477_identify_module(struct imx477 *imx477)
 			      IMX477_REG_VALUE_16BIT, &val);
 	if (ret) {
 		dev_err(&client->dev, "failed to read chip id %x, with error %d\n",
-			IMX477_CHIP_ID, ret);
+			expected_id, ret);
 		return ret;
 	}
 
-	if (val != IMX477_CHIP_ID) {
+	if (val != expected_id) {
 		dev_err(&client->dev, "chip id mismatch: %x!=%x\n",
-			IMX477_CHIP_ID, val);
+			expected_id, val);
 		return -EIO;
 	}
+
+	dev_info(&client->dev, "Device found is imx%x\n", val);
 
 	return 0;
 }
@@ -2078,10 +2130,39 @@ error_out:
 	return ret;
 }
 
+static const struct imx477_compatible_data imx477_compatible = {
+	.chip_id = IMX477_CHIP_ID,
+	.extra_regs = {
+		.num_of_regs = 0,
+		.regs = NULL
+	}
+};
+
+static const struct imx477_reg imx378_regs[] = {
+	{0x3e35, 0x01},
+	{0x4421, 0x08},
+	{0x3ff9, 0x00},
+};
+
+static const struct imx477_compatible_data imx378_compatible = {
+	.chip_id = IMX378_CHIP_ID,
+	.extra_regs = {
+		.num_of_regs = ARRAY_SIZE(imx378_regs),
+		.regs = imx378_regs
+	}
+};
+
+static const struct of_device_id imx477_dt_ids[] = {
+	{ .compatible = "sony,imx477", .data = &imx477_compatible },
+	{ .compatible = "sony,imx378", .data = &imx378_compatible },
+	{ /* sentinel */ }
+};
+
 static int imx477_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct imx477 *imx477;
+	const struct of_device_id *match;
 	int ret;
 
 	imx477 = devm_kzalloc(&client->dev, sizeof(*imx477), GFP_KERNEL);
@@ -2089,6 +2170,12 @@ static int imx477_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	v4l2_i2c_subdev_init(&imx477->sd, client, &imx477_subdev_ops);
+
+	match = of_match_device(imx477_dt_ids, dev);
+	if (!match)
+		return -ENODEV;
+	imx477->compatible_data =
+		(const struct imx477_compatible_data *)match->data;
 
 	/* Check the hardware configuration in device tree */
 	if (imx477_check_hwcfg(dev))
@@ -2126,7 +2213,7 @@ static int imx477_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	ret = imx477_identify_module(imx477);
+	ret = imx477_identify_module(imx477, imx477->compatible_data->chip_id);
 	if (ret)
 		goto error_power_off;
 
@@ -2198,10 +2285,6 @@ static int imx477_remove(struct i2c_client *client)
 	return 0;
 }
 
-static const struct of_device_id imx477_dt_ids[] = {
-	{ .compatible = "sony,imx477" },
-	{ /* sentinel */ }
-};
 MODULE_DEVICE_TABLE(of, imx477_dt_ids);
 
 static const struct dev_pm_ops imx477_pm_ops = {

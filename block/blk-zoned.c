@@ -240,7 +240,7 @@ int blkdev_zone_mgmt(struct block_device *bdev, enum req_opf op,
 		 */
 		if (op == REQ_OP_ZONE_RESET &&
 		    blkdev_allow_reset_all_zones(bdev, sector, nr_sectors)) {
-			bio->bi_opf = REQ_OP_ZONE_RESET_ALL;
+			bio->bi_opf = REQ_OP_ZONE_RESET_ALL | REQ_SYNC;
 			break;
 		}
 
@@ -295,9 +295,6 @@ int blkdev_report_zones_ioctl(struct block_device *bdev, fmode_t mode,
 
 	if (!blk_queue_is_zoned(q))
 		return -ENOTTY;
-
-	if (!capable(CAP_SYS_ADMIN))
-		return -EACCES;
 
 	if (copy_from_user(&rep, argp, sizeof(struct blk_zone_report)))
 		return -EFAULT;
@@ -356,9 +353,6 @@ int blkdev_zone_mgmt_ioctl(struct block_device *bdev, fmode_t mode,
 
 	if (!blk_queue_is_zoned(q))
 		return -ENOTTY;
-
-	if (!capable(CAP_SYS_ADMIN))
-		return -EACCES;
 
 	if (!(mode & FMODE_WRITE))
 		return -EBADF;

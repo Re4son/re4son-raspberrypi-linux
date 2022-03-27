@@ -119,6 +119,10 @@
 /* SDMMC CQE Base Address for Tegra Host Ver 4.1 and Higher */
 #define SDHCI_TEGRA_CQE_BASE_ADDR			0xF000
 
+#define SDHCI_TEGRA_CQE_TRNS_MODE	(SDHCI_TRNS_MULTI | \
+					 SDHCI_TRNS_BLK_CNT_EN | \
+					 SDHCI_TRNS_DMA)
+
 struct sdhci_tegra_soc_data {
 	const struct sdhci_pltfm_data *pdata;
 	u64 dma_mask;
@@ -348,23 +352,6 @@ static void tegra_sdhci_set_tap(struct sdhci_host *host, unsigned int tap)
 		sdhci_reset(host, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 		tegra_sdhci_configure_card_clk(host, card_clk_enabled);
 	}
-}
-
-static void tegra_sdhci_hs400_enhanced_strobe(struct mmc_host *mmc,
-					      struct mmc_ios *ios)
-{
-	struct sdhci_host *host = mmc_priv(mmc);
-	u32 val;
-
-	val = sdhci_readl(host, SDHCI_TEGRA_VENDOR_SYS_SW_CTRL);
-
-	if (ios->enhanced_strobe)
-		val |= SDHCI_TEGRA_SYS_SW_CTRL_ENHANCED_STROBE;
-	else
-		val &= ~SDHCI_TEGRA_SYS_SW_CTRL_ENHANCED_STROBE;
-
-	sdhci_writel(host, val, SDHCI_TEGRA_VENDOR_SYS_SW_CTRL);
-
 }
 
 static void tegra_sdhci_reset(struct sdhci_host *host, u8 mask)
@@ -787,6 +774,32 @@ static void tegra_sdhci_set_clock(struct sdhci_host *host, unsigned int clock)
 	}
 }
 
+static void tegra_sdhci_hs400_enhanced_strobe(struct mmc_host *mmc,
+					      struct mmc_ios *ios)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	u32 val;
+
+	val = sdhci_readl(host, SDHCI_TEGRA_VENDOR_SYS_SW_CTRL);
+
+	if (ios->enhanced_strobe) {
+		val |= SDHCI_TEGRA_SYS_SW_CTRL_ENHANCED_STROBE;
+		/*
+		 * When CMD13 is sent from mmc_select_hs400es() after
+		 * switching to HS400ES mode, the bus is operating at
+		 * either MMC_HIGH_26_MAX_DTR or MMC_HIGH_52_MAX_DTR.
+		 * To meet Tegra SDHCI requirement at HS400ES mode, force SDHCI
+		 * interface clock to MMC_HS200_MAX_DTR (200 MHz) so that host
+		 * controller CAR clock and the interface clock are rate matched.
+		 */
+		tegra_sdhci_set_clock(host, MMC_HS200_MAX_DTR);
+	} else {
+		val &= ~SDHCI_TEGRA_SYS_SW_CTRL_ENHANCED_STROBE;
+	}
+
+	sdhci_writel(host, val, SDHCI_TEGRA_VENDOR_SYS_SW_CTRL);
+}
+
 static unsigned int tegra_sdhci_get_max_clock(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -1156,6 +1169,7 @@ static void tegra_sdhci_voltage_switch(struct sdhci_host *host)
 static void tegra_cqhci_writel(struct cqhci_host *cq_host, u32 val, int reg)
 {
 	struct mmc_host *mmc = cq_host->mmc;
+	struct sdhci_host *host = mmc_priv(mmc);
 	u8 ctrl;
 	ktime_t timeout;
 	bool timed_out;
@@ -1170,6 +1184,7 @@ static void tegra_cqhci_writel(struct cqhci_host *cq_host, u32 val, int reg)
 	 */
 	if (reg == CQHCI_CTL && !(val & CQHCI_HALT) &&
 	    cqhci_readl(cq_host, CQHCI_CTL) & CQHCI_HALT) {
+		sdhci_writew(host, SDHCI_TEGRA_CQE_TRNS_MODE, SDHCI_TRANSFER_MODE);
 		sdhci_cqe_enable(mmc);
 		writel(val, cq_host->mmio + reg);
 		timeout = ktime_add_us(ktime_get(), 50);
@@ -1205,6 +1220,7 @@ static void sdhci_tegra_update_dcmd_desc(struct mmc_host *mmc,
 static void sdhci_tegra_cqe_enable(struct mmc_host *mmc)
 {
 	struct cqhci_host *cq_host = mmc->cqe_private;
+	struct sdhci_host *host = mmc_priv(mmc);
 	u32 val;
 
 	/*
@@ -1218,6 +1234,7 @@ static void sdhci_tegra_cqe_enable(struct mmc_host *mmc)
 		if (val & CQHCI_ENABLE)
 			cqhci_writel(cq_host, (val & ~CQHCI_ENABLE),
 				     CQHCI_CFG);
+		sdhci_writew(host, SDHCI_TEGRA_CQE_TRNS_MODE, SDHCI_TRANSFER_MODE);
 		sdhci_cqe_enable(mmc);
 		if (val & CQHCI_ENABLE)
 			cqhci_writel(cq_host, val, CQHCI_CFG);
@@ -1281,12 +1298,36 @@ static void tegra_sdhci_set_timeout(struct sdhci_host *host,
 	__sdhci_set_timeout(host, cmd);
 }
 
+static void sdhci_tegra_cqe_pre_enable(struct mmc_host *mmc)
+{
+	struct cqhci_host *cq_host = mmc->cqe_private;
+	u32 reg;
+
+	reg = cqhci_readl(cq_host, CQHCI_CFG);
+	reg |= CQHCI_ENABLE;
+	cqhci_writel(cq_host, reg, CQHCI_CFG);
+}
+
+static void sdhci_tegra_cqe_post_disable(struct mmc_host *mmc)
+{
+	struct cqhci_host *cq_host = mmc->cqe_private;
+	struct sdhci_host *host = mmc_priv(mmc);
+	u32 reg;
+
+	reg = cqhci_readl(cq_host, CQHCI_CFG);
+	reg &= ~CQHCI_ENABLE;
+	cqhci_writel(cq_host, reg, CQHCI_CFG);
+	sdhci_writew(host, 0x0, SDHCI_TRANSFER_MODE);
+}
+
 static const struct cqhci_host_ops sdhci_tegra_cqhci_ops = {
 	.write_l    = tegra_cqhci_writel,
 	.enable	= sdhci_tegra_cqe_enable,
 	.disable = sdhci_cqe_disable,
 	.dumpregs = sdhci_tegra_dumpregs,
 	.update_dcmd_desc = sdhci_tegra_update_dcmd_desc,
+	.pre_enable = sdhci_tegra_cqe_pre_enable,
+	.post_disable = sdhci_tegra_cqe_post_disable,
 };
 
 static int tegra_sdhci_set_dma_mask(struct sdhci_host *host)

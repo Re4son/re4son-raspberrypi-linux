@@ -709,6 +709,8 @@ static int ctrl_set_video_encode_profile_level(struct bm2835_mmal_dev *dev,
 		case V4L2_MPEG_VIDEO_H264_LEVEL_3_1:
 		case V4L2_MPEG_VIDEO_H264_LEVEL_3_2:
 		case V4L2_MPEG_VIDEO_H264_LEVEL_4_0:
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_1:
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_2:
 			dev->capture.enc_level = ctrl->val;
 			break;
 		default:
@@ -773,6 +775,17 @@ static int ctrl_set_video_encode_profile_level(struct bm2835_mmal_dev *dev,
 			break;
 		case V4L2_MPEG_VIDEO_H264_LEVEL_4_0:
 			param.level = MMAL_VIDEO_LEVEL_H264_4;
+			break;
+		/*
+		 * Note that the hardware spec is level 4.0. Achieving levels
+		 * above that depend on exactly the resolution and frame rate
+		 * being requested.
+		 */
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_1:
+			param.level = MMAL_VIDEO_LEVEL_H264_41;
+			break;
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_2:
+			param.level = MMAL_VIDEO_LEVEL_H264_42;
 			break;
 		default:
 			/* Should never get here */
@@ -1224,8 +1237,10 @@ static const struct bm2835_mmal_v4l2_ctrl v4l2_ctrls[V4L2_CTRL_COUNT] = {
 			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_0) |
 			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_1) |
 			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_2) |
-			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_0)),
-		.max = V4L2_MPEG_VIDEO_H264_LEVEL_4_0,
+			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_0) |
+			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_1) |
+			 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_2)),
+		.max = V4L2_MPEG_VIDEO_H264_LEVEL_4_2,
 		.def = V4L2_MPEG_VIDEO_H264_LEVEL_4_0,
 		.step = 1,
 		.imenu = NULL,
@@ -1253,6 +1268,39 @@ static const struct bm2835_mmal_v4l2_ctrl v4l2_ctrls[V4L2_CTRL_COUNT] = {
 		.step = 1,
 		.imenu = NULL,
 		.mmal_id = MMAL_PARAMETER_INTRAPERIOD,
+		.setter = ctrl_set_video_encode_param_output,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDEO_H264_MIN_QP,
+		.type = MMAL_CONTROL_TYPE_STD,
+		.min = 0,
+		.max = 51,
+		.def = 0,
+		.step = 1,
+		.imenu = NULL,
+		.mmal_id = MMAL_PARAMETER_VIDEO_ENCODE_MIN_QUANT,
+		.setter = ctrl_set_video_encode_param_output,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDEO_H264_MAX_QP,
+		.type = MMAL_CONTROL_TYPE_STD,
+		.min = 0,
+		.max = 51,
+		.def = 0,
+		.step = 1,
+		.imenu = NULL,
+		.mmal_id = MMAL_PARAMETER_VIDEO_ENCODE_MAX_QUANT,
+		.setter = ctrl_set_video_encode_param_output,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
+		.type = MMAL_CONTROL_TYPE_STD,
+		.min = 0,
+		.max = 0,
+		.def = 0,
+		.step = 0,
+		.imenu = NULL,
+		.mmal_id = MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME,
 		.setter = ctrl_set_video_encode_param_output,
 	},
 };

@@ -382,7 +382,7 @@ static void intel_overlay_off_tail(struct intel_overlay *overlay)
 		i830_overlay_clock_gating(dev_priv, true);
 }
 
-static void
+__i915_active_call static void
 intel_overlay_last_flip_retire(struct i915_active *active)
 {
 	struct intel_overlay *overlay =
@@ -931,6 +931,9 @@ static int check_overlay_dst(struct intel_overlay *overlay,
 {
 	const struct intel_crtc_state *pipe_config =
 		overlay->crtc->config;
+
+	if (rec->dst_height == 0 || rec->dst_width == 0)
+		return -EINVAL;
 
 	if (rec->dst_x < pipe_config->pipe_src_w &&
 	    rec->dst_x + rec->dst_width <= pipe_config->pipe_src_w &&

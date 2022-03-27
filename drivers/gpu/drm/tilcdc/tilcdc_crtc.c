@@ -518,6 +518,15 @@ static void tilcdc_crtc_off(struct drm_crtc *crtc, bool shutdown)
 
 	drm_crtc_vblank_off(crtc);
 
+	spin_lock_irq(&crtc->dev->event_lock);
+
+	if (crtc->state->event) {
+		drm_crtc_send_vblank_event(crtc, crtc->state->event);
+		crtc->state->event = NULL;
+	}
+
+	spin_unlock_irq(&crtc->dev->event_lock);
+
 	tilcdc_crtc_disable_irqs(dev);
 
 	pm_runtime_put_sync(dev->dev);
@@ -668,9 +677,9 @@ static int tilcdc_crtc_atomic_check(struct drm_crtc *crtc,
 	if (!crtc_state->active)
 		return 0;
 
-	if (crtc_state->state->planes[0].ptr != crtc->primary ||
-	    crtc_state->state->planes[0].state == NULL ||
-	    crtc_state->state->planes[0].state->crtc != crtc) {
+	if (state->planes[0].ptr != crtc->primary ||
+	    state->planes[0].state == NULL ||
+	    state->planes[0].state->crtc != crtc) {
 		dev_dbg(crtc->dev->dev, "CRTC primary plane must be present");
 		return -EINVAL;
 	}

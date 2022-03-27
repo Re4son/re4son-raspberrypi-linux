@@ -239,6 +239,7 @@ source "drivers/gpu/drm/arm/Kconfig"
 config DRM_RADEON
 	tristate "ATI Radeon"
 	depends on DRM && PCI && MMU
+	depends on AGP || !AGP
 	select FW_LOADER
         select DRM_KMS_HELPER
         select DRM_TTM
@@ -390,6 +391,8 @@ source "drivers/gpu/drm/mcde/Kconfig"
 source "drivers/gpu/drm/tidss/Kconfig"
 
 source "drivers/gpu/drm/xlnx/Kconfig"
+
+source "drivers/gpu/drm/gud/Kconfig"
 
 # Keep legacy drivers last
 

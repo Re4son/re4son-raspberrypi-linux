@@ -5,7 +5,6 @@
 #include "bcm283x-rpi-smsc9514.dtsi"
 #include "bcm283x-rpi-csi1-2lane.dtsi"
 #include "bcm283x-rpi-i2c0mux_0_28.dtsi"
-#include "bcm283x-rpi-cam1-regulator.dtsi"
 
 / {
 	compatible = "raspberrypi,2-model-b-rev2", "brcm,bcm2837";
@@ -90,13 +89,13 @@
 };
 
 &leds {
-	act_led: act {
+	act_led: led-act {
 		label = "led0";
 		linux,default-trigger = "mmc0";
 		gpios = <&gpio 47 0>;
 	};
 
-	pwr_led: pwr {
+	pwr_led: led-pwr {
 		label = "led1";
 		linux,default-trigger = "input";
 		gpios = <&gpio 35 0>;
@@ -114,6 +113,9 @@
 
 &cam1_reg {
 	gpio = <&gpio 41 GPIO_ACTIVE_HIGH>;
+};
+
+cam0_reg: &cam_dummy_reg {
 };
 
 / {

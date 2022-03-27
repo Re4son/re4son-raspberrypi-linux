@@ -58,6 +58,10 @@ static int isp_video_nr = 12;
 module_param(isp_video_nr, int, 0644);
 MODULE_PARM_DESC(isp_video_nr, "isp video device number");
 
+static int deinterlace_video_nr = 18;
+module_param(deinterlace_video_nr, int, 0644);
+MODULE_PARM_DESC(deinterlace_video_nr, "deinterlace video device number");
+
 /*
  * Workaround for GStreamer v4l2convert component not considering Bayer formats
  * as raw, and therefore not considering a V4L2 device that supports them as
@@ -71,22 +75,34 @@ static unsigned int debug;
 module_param(debug, uint, 0644);
 MODULE_PARM_DESC(debug, "activates debug info (0-3)");
 
+static bool advanced_deinterlace = true;
+module_param(advanced_deinterlace, bool, 0644);
+MODULE_PARM_DESC(advanced_deinterlace, "Use advanced deinterlace");
+
+static int field_override;
+module_param(field_override, int, 0644);
+MODULE_PARM_DESC(field_override, "force TB(8)/BT(9) field");
+
 enum bcm2835_codec_role {
 	DECODE,
 	ENCODE,
 	ISP,
+	DEINTERLACE,
+	NUM_ROLES
 };
 
 static const char * const roles[] = {
 	"decode",
 	"encode",
-	"isp"
+	"isp",
+	"image_fx",
 };
 
 static const char * const components[] = {
 	"ril.video_decode",
 	"ril.video_encode",
 	"ril.isp",
+	"ril.image_fx",
 };
 
 /* Timeout for stop_streaming to allow all buffers to return */
@@ -97,8 +113,19 @@ static const char * const components[] = {
 #define MAX_W		1920
 #define MAX_H		1920
 #define BPL_ALIGN	32
-#define DEFAULT_WIDTH	640
-#define DEFAULT_HEIGHT	480
+/*
+ * The decoder spec supports the V4L2_EVENT_SOURCE_CHANGE event, but the docs
+ * seem to want it to always be generated on startup, which prevents the client
+ * from configuring the CAPTURE queue based on any parsing it has already done
+ * which may save time and allow allocation of CAPTURE buffers early. Surely
+ * SOURCE_CHANGE means something has changed, not just "always notify".
+ *
+ * For those clients that don't set the CAPTURE resolution, adopt a default
+ * resolution that is seriously unlikely to be correct, therefore almost
+ * guaranteed to get the SOURCE_CHANGE event.
+ */
+#define DEFAULT_WIDTH	32
+#define DEFAULT_HEIGHT	32
 /*
  * The unanswered question - what is the maximum size of a compressed frame?
  * V4L2 mandates that the encoded frame must fit in a single buffer. Sizing
@@ -119,7 +146,7 @@ static const char * const components[] = {
 struct bcm2835_codec_fmt {
 	u32	fourcc;
 	int	depth;
-	int	bytesperline_align;
+	u8	bytesperline_align[NUM_ROLES];
 	u32	flags;
 	u32	mmal_fmt;
 	int	size_multiplier_x2;
@@ -131,63 +158,63 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* YUV formats */
 		.fourcc			= V4L2_PIX_FMT_YUV420,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 64, 64, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_I420,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YVU420,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 64, 64, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YV12,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_NV12,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_NV12,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_NV21,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_NV21,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_RGB565,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_RGB16,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YUYV,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YUYV,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_UYVY,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_UYVY,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YVYU,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YVYU,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_VYUY,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_VYUY,
 		.size_multiplier_x2	= 2,
@@ -195,21 +222,21 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* RGB formats */
 		.fourcc			= V4L2_PIX_FMT_RGB24,
 		.depth			= 24,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_RGB24,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_BGR24,
 		.depth			= 24,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BGR24,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_BGR32,
 		.depth			= 32,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BGRA,
 		.size_multiplier_x2	= 2,
@@ -218,7 +245,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 8 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB8,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB8,
 		.size_multiplier_x2	= 2,
@@ -226,7 +253,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR8,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR8,
 		.size_multiplier_x2	= 2,
@@ -234,7 +261,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG8,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG8,
 		.size_multiplier_x2	= 2,
@@ -242,7 +269,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG8,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG8,
 		.size_multiplier_x2	= 2,
@@ -251,7 +278,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB10P,
 		.depth			= 10,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB10P,
 		.size_multiplier_x2	= 2,
@@ -259,7 +286,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR10P,
 		.depth			= 10,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR10P,
 		.size_multiplier_x2	= 2,
@@ -267,7 +294,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG10P,
 		.depth			= 10,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG10P,
 		.size_multiplier_x2	= 2,
@@ -275,7 +302,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG10P,
 		.depth			= 10,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG10P,
 		.size_multiplier_x2	= 2,
@@ -284,7 +311,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB12P,
 		.depth			= 12,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB12P,
 		.size_multiplier_x2	= 2,
@@ -292,7 +319,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR12P,
 		.depth			= 12,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR12P,
 		.size_multiplier_x2	= 2,
@@ -300,7 +327,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG12P,
 		.depth			= 12,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG12P,
 		.size_multiplier_x2	= 2,
@@ -308,7 +335,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG12P,
 		.depth			= 12,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG12P,
 		.size_multiplier_x2	= 2,
@@ -317,7 +344,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB14P,
 		.depth			= 14,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB14P,
 		.size_multiplier_x2	= 2,
@@ -325,7 +352,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR14P,
 		.depth			= 14,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR14P,
 		.size_multiplier_x2	= 2,
@@ -334,7 +361,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG14P,
 		.depth			= 14,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG14P,
 		.size_multiplier_x2	= 2,
@@ -342,7 +369,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG14P,
 		.depth			= 14,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG14P,
 		.size_multiplier_x2	= 2,
@@ -351,7 +378,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 16 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB16,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB16,
 		.size_multiplier_x2	= 2,
@@ -359,7 +386,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR16,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR16,
 		.size_multiplier_x2	= 2,
@@ -367,7 +394,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG16,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG16,
 		.size_multiplier_x2	= 2,
@@ -375,7 +402,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG16,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG16,
 		.size_multiplier_x2	= 2,
@@ -385,7 +412,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB10,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB10,
 		.size_multiplier_x2	= 2,
@@ -393,7 +420,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR10,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR10,
 		.size_multiplier_x2	= 2,
@@ -401,7 +428,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG10,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG10,
 		.size_multiplier_x2	= 2,
@@ -409,7 +436,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG10,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG10,
 		.size_multiplier_x2	= 2,
@@ -418,7 +445,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB12,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB12,
 		.size_multiplier_x2	= 2,
@@ -426,7 +453,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR12,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR12,
 		.size_multiplier_x2	= 2,
@@ -434,7 +461,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG12,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG12,
 		.size_multiplier_x2	= 2,
@@ -442,7 +469,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG12,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG12,
 		.size_multiplier_x2	= 2,
@@ -451,7 +478,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB14,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB14,
 		.size_multiplier_x2	= 2,
@@ -459,7 +486,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR14,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR14,
 		.size_multiplier_x2	= 2,
@@ -467,7 +494,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG14,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG14,
 		.size_multiplier_x2	= 2,
@@ -475,7 +502,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG14,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG14,
 		.size_multiplier_x2	= 2,
@@ -485,7 +512,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 8 bit */
 		.fourcc			= V4L2_PIX_FMT_GREY,
 		.depth			= 8,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_GREY,
 		.size_multiplier_x2	= 2,
@@ -493,7 +520,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_Y10P,
 		.depth			= 10,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y10P,
 		.size_multiplier_x2	= 2,
@@ -501,7 +528,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_Y12P,
 		.depth			= 12,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y12P,
 		.size_multiplier_x2	= 2,
@@ -509,7 +536,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_Y14P,
 		.depth			= 14,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y14P,
 		.size_multiplier_x2	= 2,
@@ -517,7 +544,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 16 bit */
 		.fourcc			= V4L2_PIX_FMT_Y16,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y16,
 		.size_multiplier_x2	= 2,
@@ -525,7 +552,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y10,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y10,
 		.size_multiplier_x2	= 2,
@@ -533,7 +560,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y12,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y12,
 		.size_multiplier_x2	= 2,
@@ -541,7 +568,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y14,
 		.depth			= 16,
-		.bytesperline_align	= 32,
+		.bytesperline_align	= { 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y14,
 		.size_multiplier_x2	= 2,
@@ -571,11 +598,6 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		.depth			= 0,
 		.flags			= V4L2_FMT_FLAG_COMPRESSED,
 		.mmal_fmt		= MMAL_ENCODING_MP2V,
-	}, {
-		.fourcc			= V4L2_PIX_FMT_VP8,
-		.depth			= 0,
-		.flags			= V4L2_FMT_FLAG_COMPRESSED,
-		.mmal_fmt		= MMAL_ENCODING_VP8,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_VC1_ANNEX_G,
 		.depth			= 0,
@@ -608,6 +630,7 @@ struct bcm2835_codec_q_data {
 	unsigned int		crop_height;
 	bool			selection_set;
 	struct v4l2_fract	aspect_ratio;
+	enum v4l2_field		field;
 
 	unsigned int		sizeimage;
 	unsigned int		sequence;
@@ -652,6 +675,9 @@ struct bcm2835_codec_ctx {
 	enum v4l2_xfer_func	xfer_func;
 	enum v4l2_quantization	quant;
 
+	int hflip;
+	int vflip;
+
 	/* Source and destination queue data */
 	struct bcm2835_codec_q_data   q_data[2];
 	s32  bitrate;
@@ -671,6 +697,7 @@ struct bcm2835_codec_driver {
 	struct bcm2835_codec_dev *encode;
 	struct bcm2835_codec_dev *decode;
 	struct bcm2835_codec_dev *isp;
+	struct bcm2835_codec_dev *deinterlace;
 };
 
 enum {
@@ -814,9 +841,10 @@ static inline unsigned int get_sizeimage(int bpl, int width, int height,
 }
 
 static inline unsigned int get_bytesperline(int width,
-					    struct bcm2835_codec_fmt *fmt)
+					    struct bcm2835_codec_fmt *fmt,
+					    enum bcm2835_codec_role role)
 {
-	return ALIGN((width * fmt->depth) >> 3, fmt->bytesperline_align);
+	return ALIGN((width * fmt->depth) >> 3, fmt->bytesperline_align[role]);
 }
 
 static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
@@ -898,13 +926,15 @@ static void ip_buffer_cb(struct vchiq_mmal_instance *instance,
 
 	v4l2_dbg(3, debug, &ctx->dev->v4l2_dev, "%s: no error. Return buffer %p\n",
 		 __func__, &buf->m2m.vb.vb2_buf);
-	vb2_buffer_done(&buf->m2m.vb.vb2_buf, VB2_BUF_STATE_DONE);
+	vb2_buffer_done(&buf->m2m.vb.vb2_buf,
+			port->enabled ? VB2_BUF_STATE_DONE :
+					VB2_BUF_STATE_QUEUED);
 
 	ctx->num_ip_buffers++;
 	v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: done %d input buffers\n",
 		 __func__, ctx->num_ip_buffers);
 
-	if (!port->enabled)
+	if (!port->enabled && atomic_read(&port->buffers_with_vpu))
 		complete(&ctx->frame_cmplt);
 }
 
@@ -930,23 +960,43 @@ static void send_eos_event(struct bcm2835_codec_ctx *ctx)
 	v4l2_event_queue_fh(&ctx->fh, &ev);
 }
 
-static void color_mmal2v4l(struct bcm2835_codec_ctx *ctx, u32 mmal_color_space)
+static void color_mmal2v4l(struct bcm2835_codec_ctx *ctx, u32 encoding,
+			   u32 color_space)
 {
-	switch (mmal_color_space) {
-	case MMAL_COLOR_SPACE_ITUR_BT601:
-		ctx->colorspace = V4L2_COLORSPACE_REC709;
-		ctx->xfer_func = V4L2_XFER_FUNC_709;
-		ctx->ycbcr_enc = V4L2_YCBCR_ENC_601;
-		ctx->quant = V4L2_QUANTIZATION_LIM_RANGE;
-		break;
+	int is_rgb;
 
-	case MMAL_COLOR_SPACE_ITUR_BT709:
-		ctx->colorspace = V4L2_COLORSPACE_REC709;
-		ctx->xfer_func = V4L2_XFER_FUNC_709;
-		ctx->ycbcr_enc = V4L2_YCBCR_ENC_709;
-		ctx->quant = V4L2_QUANTIZATION_LIM_RANGE;
+	switch (encoding) {
+	case MMAL_ENCODING_I420:
+	case MMAL_ENCODING_YV12:
+	case MMAL_ENCODING_NV12:
+	case MMAL_ENCODING_NV21:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_YVYU:
+	case V4L2_PIX_FMT_UYVY:
+	case V4L2_PIX_FMT_VYUY:
+		/* YUV based colourspaces */
+		switch (color_space) {
+		case MMAL_COLOR_SPACE_ITUR_BT601:
+			ctx->colorspace = V4L2_COLORSPACE_SMPTE170M;
+			break;
+
+		case MMAL_COLOR_SPACE_ITUR_BT709:
+			ctx->colorspace = V4L2_COLORSPACE_REC709;
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		/* RGB based colourspaces */
+		ctx->colorspace = V4L2_COLORSPACE_SRGB;
 		break;
 	}
+	ctx->xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(ctx->colorspace);
+	ctx->ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(ctx->colorspace);
+	is_rgb = ctx->colorspace == V4L2_COLORSPACE_SRGB;
+	ctx->quant = V4L2_MAP_QUANTIZATION_DEFAULT(is_rgb, ctx->colorspace,
+						   ctx->ycbcr_enc);
 }
 
 static void handle_fmt_changed(struct bcm2835_codec_ctx *ctx,
@@ -955,6 +1005,11 @@ static void handle_fmt_changed(struct bcm2835_codec_ctx *ctx,
 	struct bcm2835_codec_q_data *q_data;
 	struct mmal_msg_event_format_changed *format =
 		(struct mmal_msg_event_format_changed *)mmal_buf->buffer;
+	struct mmal_parameter_video_interlace_type interlace;
+	int interlace_size = sizeof(interlace);
+	struct vb2_queue *vq;
+	int ret;
+
 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Format changed: buff size min %u, rec %u, buff num min %u, rec %u\n",
 		 __func__,
 		 format->buffer_size_min,
@@ -979,16 +1034,52 @@ static void handle_fmt_changed(struct bcm2835_codec_ctx *ctx,
 
 	q_data->crop_width = format->es.video.crop.width;
 	q_data->crop_height = format->es.video.crop.height;
+	/*
+	 * Stop S_FMT updating crop_height should it be unaligned.
+	 * Client can still update the crop region via S_SELECTION should it
+	 * really want to, but the decoder is likely to complain that the
+	 * format then doesn't match.
+	 */
+	q_data->selection_set = true;
 	q_data->bytesperline = get_bytesperline(format->es.video.width,
-						q_data->fmt);
+						q_data->fmt, ctx->dev->role);
 
 	q_data->height = format->es.video.height;
 	q_data->sizeimage = format->buffer_size_min;
 	if (format->es.video.color_space)
-		color_mmal2v4l(ctx, format->es.video.color_space);
+		color_mmal2v4l(ctx, format->format.encoding,
+			       format->es.video.color_space);
 
 	q_data->aspect_ratio.numerator = format->es.video.par.num;
 	q_data->aspect_ratio.denominator = format->es.video.par.den;
+
+	ret = vchiq_mmal_port_parameter_get(ctx->dev->instance,
+					    &ctx->component->output[0],
+					    MMAL_PARAMETER_VIDEO_INTERLACE_TYPE,
+					    &interlace,
+					    &interlace_size);
+	if (!ret) {
+		switch (interlace.mode) {
+		case MMAL_INTERLACE_PROGRESSIVE:
+		default:
+			q_data->field = V4L2_FIELD_NONE;
+			break;
+		case MMAL_INTERLACE_FIELDS_INTERLEAVED_UPPER_FIRST:
+			q_data->field = V4L2_FIELD_INTERLACED_TB;
+			break;
+		case MMAL_INTERLACE_FIELDS_INTERLEAVED_LOWER_FIRST:
+			q_data->field = V4L2_FIELD_INTERLACED_BT;
+			break;
+		}
+		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: interlace mode %u, v4l2 field %u\n",
+			 __func__, interlace.mode, q_data->field);
+	} else {
+		q_data->field = V4L2_FIELD_NONE;
+	}
+
+	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+	if (vq->streaming)
+		vq->last_buffer_dequeued = true;
 
 	queue_res_chg_event(ctx);
 }
@@ -998,11 +1089,12 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 			 struct mmal_buffer *mmal_buf)
 {
 	struct bcm2835_codec_ctx *ctx = port->cb_ctx;
+	enum vb2_buffer_state buf_state = VB2_BUF_STATE_DONE;
 	struct m2m_mmal_buffer *buf;
 	struct vb2_v4l2_buffer *vb2;
 
 	v4l2_dbg(2, debug, &ctx->dev->v4l2_dev,
-		 "%s: status:%d, buf:%p, length:%lu, flags %u, pts %lld\n",
+		 "%s: status:%d, buf:%p, length:%lu, flags %04x, pts %lld\n",
 		 __func__, status, mmal_buf, mmal_buf->length,
 		 mmal_buf->mmal_flags, mmal_buf->pts);
 
@@ -1042,8 +1134,9 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 		v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: Empty buffer - flags %04x",
 			 __func__, mmal_buf->mmal_flags);
 		if (!(mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_EOS)) {
-			vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_ERROR);
-			if (!port->enabled)
+			vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_QUEUED);
+			if (!port->enabled &&
+			    atomic_read(&port->buffers_with_vpu))
 				complete(&ctx->frame_cmplt);
 			return;
 		}
@@ -1054,20 +1147,39 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 		vb2->flags |= V4L2_BUF_FLAG_LAST;
 	}
 
+	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_CORRUPTED)
+		buf_state = VB2_BUF_STATE_ERROR;
+
 	/* vb2 timestamps in nsecs, mmal in usecs */
 	vb2->vb2_buf.timestamp = mmal_buf->pts * 1000;
 
 	vb2_set_plane_payload(&vb2->vb2_buf, 0, mmal_buf->length);
+	switch (mmal_buf->mmal_flags &
+				(MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED |
+				 MMAL_BUFFER_HEADER_VIDEO_FLAG_TOP_FIELD_FIRST)) {
+	case 0:
+	case MMAL_BUFFER_HEADER_VIDEO_FLAG_TOP_FIELD_FIRST: /* Bogus */
+		vb2->field = V4L2_FIELD_NONE;
+		break;
+	case MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED:
+		vb2->field = V4L2_FIELD_INTERLACED_BT;
+		break;
+	case (MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED |
+	      MMAL_BUFFER_HEADER_VIDEO_FLAG_TOP_FIELD_FIRST):
+		vb2->field = V4L2_FIELD_INTERLACED_TB;
+		break;
+	}
+
 	if (mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME)
 		vb2->flags |= V4L2_BUF_FLAG_KEYFRAME;
 
-	vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_DONE);
+	vb2_buffer_done(&vb2->vb2_buf, buf_state);
 	ctx->num_op_buffers++;
 
 	v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: done %d output buffers\n",
 		 __func__, ctx->num_op_buffers);
 
-	if (!port->enabled)
+	if (!port->enabled && atomic_read(&port->buffers_with_vpu))
 		complete(&ctx->frame_cmplt);
 }
 
@@ -1108,6 +1220,19 @@ static void vb2_to_mmal_buffer(struct m2m_mmal_buffer *buf,
 	do_div(pts, 1000);
 	buf->mmal.pts = pts;
 	buf->mmal.dts = MMAL_TIME_UNKNOWN;
+
+	switch (field_override ? field_override : vb2->field) {
+	default:
+	case V4L2_FIELD_NONE:
+		break;
+	case V4L2_FIELD_INTERLACED_BT:
+		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED;
+		break;
+	case V4L2_FIELD_INTERLACED_TB:
+		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED |
+					MMAL_BUFFER_HEADER_VIDEO_FLAG_TOP_FIELD_FIRST;
+		break;
+	}
 }
 
 /* device_run() - prepares and starts the device
@@ -1127,35 +1252,47 @@ static void device_run(void *priv)
 
 	v4l2_dbg(3, debug, &ctx->dev->v4l2_dev, "%s: off we go\n", __func__);
 
-	src_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->out_q_ctx);
-	if (src_buf) {
-		m2m = container_of(src_buf, struct v4l2_m2m_buffer, vb);
-		src_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
-		vb2_to_mmal_buffer(src_m2m_buf, src_buf);
+	if (ctx->fh.m2m_ctx->out_q_ctx.q.streaming) {
+		src_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->out_q_ctx);
+		if (src_buf) {
+			m2m = container_of(src_buf, struct v4l2_m2m_buffer, vb);
+			src_m2m_buf = container_of(m2m, struct m2m_mmal_buffer,
+						   m2m);
+			vb2_to_mmal_buffer(src_m2m_buf, src_buf);
 
-		ret = vchiq_mmal_submit_buffer(dev->instance,
-					       &ctx->component->input[0],
-					       &src_m2m_buf->mmal);
-		v4l2_dbg(3, debug, &ctx->dev->v4l2_dev, "%s: Submitted ip buffer len %lu, pts %llu, flags %04x\n",
-			 __func__, src_m2m_buf->mmal.length,
-			 src_m2m_buf->mmal.pts, src_m2m_buf->mmal.mmal_flags);
-		if (ret)
-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed submitting ip buffer\n",
-				 __func__);
+			ret = vchiq_mmal_submit_buffer(dev->instance,
+						       &ctx->component->input[0],
+						       &src_m2m_buf->mmal);
+			v4l2_dbg(3, debug, &ctx->dev->v4l2_dev,
+				 "%s: Submitted ip buffer len %lu, pts %llu, flags %04x\n",
+				 __func__, src_m2m_buf->mmal.length,
+				 src_m2m_buf->mmal.pts,
+				 src_m2m_buf->mmal.mmal_flags);
+			if (ret)
+				v4l2_err(&ctx->dev->v4l2_dev,
+					 "%s: Failed submitting ip buffer\n",
+					 __func__);
+		}
 	}
 
-	dst_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->cap_q_ctx);
-	if (dst_buf) {
-		m2m = container_of(dst_buf, struct v4l2_m2m_buffer, vb);
-		dst_m2m_buf = container_of(m2m, struct m2m_mmal_buffer, m2m);
-		vb2_to_mmal_buffer(dst_m2m_buf, dst_buf);
+	if (ctx->fh.m2m_ctx->cap_q_ctx.q.streaming) {
+		dst_buf = v4l2_m2m_buf_remove(&ctx->fh.m2m_ctx->cap_q_ctx);
+		if (dst_buf) {
+			m2m = container_of(dst_buf, struct v4l2_m2m_buffer, vb);
+			dst_m2m_buf = container_of(m2m, struct m2m_mmal_buffer,
+						   m2m);
+			vb2_to_mmal_buffer(dst_m2m_buf, dst_buf);
 
-		ret = vchiq_mmal_submit_buffer(dev->instance,
-					       &ctx->component->output[0],
-					       &dst_m2m_buf->mmal);
-		if (ret)
-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed submitting op buffer\n",
-				 __func__);
+			v4l2_dbg(3, debug, &ctx->dev->v4l2_dev,
+				 "%s: Submitted op buffer\n", __func__);
+			ret = vchiq_mmal_submit_buffer(dev->instance,
+						       &ctx->component->output[0],
+						       &dst_m2m_buf->mmal);
+			if (ret)
+				v4l2_err(&ctx->dev->v4l2_dev,
+					 "%s: Failed submitting op buffer\n",
+					 __func__);
+		}
 	}
 
 	v4l2_dbg(3, debug, &ctx->dev->v4l2_dev, "%s: Submitted src %p, dst %p\n",
@@ -1229,7 +1366,7 @@ static int vidioc_g_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f)
 	f->fmt.pix_mp.width			= q_data->crop_width;
 	f->fmt.pix_mp.height			= q_data->height;
 	f->fmt.pix_mp.pixelformat		= q_data->fmt->fourcc;
-	f->fmt.pix_mp.field			= V4L2_FIELD_NONE;
+	f->fmt.pix_mp.field			= q_data->field;
 	f->fmt.pix_mp.colorspace		= ctx->colorspace;
 	f->fmt.pix_mp.plane_fmt[0].sizeimage	= q_data->sizeimage;
 	f->fmt.pix_mp.plane_fmt[0].bytesperline	= q_data->bytesperline;
@@ -1259,6 +1396,8 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 			  struct bcm2835_codec_fmt *fmt)
 {
+	unsigned int sizeimage, min_bytesperline;
+
 	/*
 	 * The V4L2 specification requires the driver to correct the format
 	 * struct if any of the dimensions is unsupported
@@ -1285,15 +1424,56 @@ static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 			f->fmt.pix_mp.height = ALIGN(f->fmt.pix_mp.height, 16);
 	}
 	f->fmt.pix_mp.num_planes = 1;
+	min_bytesperline = get_bytesperline(f->fmt.pix_mp.width, fmt,
+					    ctx->dev->role);
+	if (f->fmt.pix_mp.plane_fmt[0].bytesperline < min_bytesperline)
+		f->fmt.pix_mp.plane_fmt[0].bytesperline = min_bytesperline;
 	f->fmt.pix_mp.plane_fmt[0].bytesperline =
-		get_bytesperline(f->fmt.pix_mp.width, fmt);
-	f->fmt.pix_mp.plane_fmt[0].sizeimage =
-		get_sizeimage(f->fmt.pix_mp.plane_fmt[0].bytesperline,
-			      f->fmt.pix_mp.width, f->fmt.pix_mp.height, fmt);
+		ALIGN(f->fmt.pix_mp.plane_fmt[0].bytesperline,
+		      fmt->bytesperline_align[ctx->dev->role]);
+
+	sizeimage = get_sizeimage(f->fmt.pix_mp.plane_fmt[0].bytesperline,
+				  f->fmt.pix_mp.width, f->fmt.pix_mp.height,
+				  fmt);
+	/*
+	 * Drivers must set sizeimage for uncompressed formats
+	 * Compressed formats allow the client to request an alternate
+	 * size for the buffer.
+	 */
+	if (!(fmt->flags & V4L2_FMT_FLAG_COMPRESSED) ||
+	    f->fmt.pix_mp.plane_fmt[0].sizeimage < sizeimage)
+		f->fmt.pix_mp.plane_fmt[0].sizeimage = sizeimage;
+
 	memset(f->fmt.pix_mp.plane_fmt[0].reserved, 0,
 	       sizeof(f->fmt.pix_mp.plane_fmt[0].reserved));
 
-	f->fmt.pix_mp.field = V4L2_FIELD_NONE;
+	if (ctx->dev->role == DECODE || ctx->dev->role == DEINTERLACE) {
+		switch (f->fmt.pix_mp.field) {
+		/*
+		 * All of this is pretty much guesswork as we'll set the
+		 * interlace format correctly come format changed, and signal
+		 * it appropriately on each buffer.
+		 */
+		default:
+		case V4L2_FIELD_NONE:
+		case V4L2_FIELD_ANY:
+			f->fmt.pix_mp.field = V4L2_FIELD_NONE;
+			break;
+		case V4L2_FIELD_INTERLACED:
+			f->fmt.pix_mp.field = V4L2_FIELD_INTERLACED;
+			break;
+		case V4L2_FIELD_TOP:
+		case V4L2_FIELD_BOTTOM:
+		case V4L2_FIELD_INTERLACED_TB:
+			f->fmt.pix_mp.field = V4L2_FIELD_INTERLACED_TB;
+			break;
+		case V4L2_FIELD_INTERLACED_BT:
+			f->fmt.pix_mp.field = V4L2_FIELD_INTERLACED_BT;
+			break;
+		}
+	} else {
+		f->fmt.pix_mp.field = V4L2_FIELD_NONE;
+	}
 
 	return 0;
 }
@@ -1340,6 +1520,7 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 	struct vb2_queue *vq;
 	struct vchiq_mmal_port *port;
 	bool update_capture_port = false;
+	bool reenable_port = false;
 	int ret;
 
 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Setting format for type %d, wxh: %dx%d, fmt: %08x, size %u\n",
@@ -1376,11 +1557,13 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 	ctx->ycbcr_enc = f->fmt.pix_mp.ycbcr_enc;
 	ctx->quant = f->fmt.pix_mp.quantization;
 
+	q_data->field = f->fmt.pix_mp.field;
+
 	/* All parameters should have been set correctly by try_fmt */
 	q_data->bytesperline = f->fmt.pix_mp.plane_fmt[0].bytesperline;
 	q_data->sizeimage = f->fmt.pix_mp.plane_fmt[0].sizeimage;
 
-	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Calulated bpl as %u, size %u\n",
+	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Calculated bpl as %u, size %u\n",
 		 q_data->bytesperline, q_data->sizeimage);
 
 	if (ctx->dev->role == DECODE &&
@@ -1402,7 +1585,8 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 		q_data_dst->height = ALIGN(q_data->crop_height, 16);
 
 		q_data_dst->bytesperline =
-			get_bytesperline(f->fmt.pix_mp.width, q_data_dst->fmt);
+			get_bytesperline(f->fmt.pix_mp.width, q_data_dst->fmt,
+					 ctx->dev->role);
 		q_data_dst->sizeimage = get_sizeimage(q_data_dst->bytesperline,
 						      q_data_dst->crop_width,
 						      q_data_dst->height,
@@ -1414,6 +1598,34 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 	port = get_port_data(ctx, vq->type);
 	if (!port)
 		return 0;
+
+	if (port->enabled) {
+		unsigned int num_buffers;
+
+		/*
+		 * This should only ever happen with DECODE and the MMAL output
+		 * port that has been enabled for resolution changed events.
+		 * In this case no buffers have been allocated or sent to the
+		 * component, so warn on that.
+		 */
+		WARN_ON(ctx->dev->role != DECODE ||
+			f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
+			atomic_read(&port->buffers_with_vpu));
+
+		/*
+		 * Disable will reread the port format, so retain buffer count.
+		 */
+		num_buffers = port->current_buffer.num;
+
+		ret = vchiq_mmal_port_disable(ctx->dev->instance, port);
+		if (ret)
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Error disabling port update buffer count, ret %d\n",
+				 __func__, ret);
+
+		port->current_buffer.num = num_buffers;
+
+		reenable_port = true;
+	}
 
 	setup_mmal_port_format(ctx, q_data, port);
 	ret = vchiq_mmal_port_set_format(ctx->dev->instance, port);
@@ -1429,6 +1641,14 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 			 port->minimum_buffer.size);
 	}
 
+	if (reenable_port) {
+		ret = vchiq_mmal_port_enable(ctx->dev->instance,
+					     port,
+					     op_buffer_cb);
+		if (ret)
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
+				 __func__, ret);
+	}
 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Set format for type %d, wxh: %dx%d, fmt: %08x, size %u\n",
 		 f->type, q_data->crop_width, q_data->height,
 		 q_data->fmt->fourcc, q_data->sizeimage);
@@ -1555,6 +1775,48 @@ static int vidioc_g_selection(struct file *file, void *priv,
 		break;
 	case ISP:
 		break;
+	case DEINTERLACE:
+		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+			switch (s->target) {
+			case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+			case V4L2_SEL_TGT_COMPOSE:
+				s->r.left = 0;
+				s->r.top = 0;
+				s->r.width = q_data->crop_width;
+				s->r.height = q_data->crop_height;
+				break;
+			case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+				s->r.left = 0;
+				s->r.top = 0;
+				s->r.width = q_data->crop_width;
+				s->r.height = q_data->crop_height;
+				break;
+			default:
+				return -EINVAL;
+			}
+		} else {
+			/* must be V4L2_BUF_TYPE_VIDEO_OUTPUT */
+			switch (s->target) {
+			case V4L2_SEL_TGT_CROP_DEFAULT:
+			case V4L2_SEL_TGT_CROP_BOUNDS:
+				s->r.top = 0;
+				s->r.left = 0;
+				s->r.width = q_data->bytesperline;
+				s->r.height = q_data->height;
+				break;
+			case V4L2_SEL_TGT_CROP:
+				s->r.top = 0;
+				s->r.left = 0;
+				s->r.width = q_data->crop_width;
+				s->r.height = q_data->crop_height;
+				break;
+			default:
+				return -EINVAL;
+			}
+		}
+		break;
+	case NUM_ROLES:
+		break;
 	}
 
 	return 0;
@@ -1619,7 +1881,7 @@ static int vidioc_s_selection(struct file *file, void *priv,
 			s->r.top = 0;
 			s->r.left = 0;
 			s->r.width = min(s->r.width, q_data->crop_width);
-			s->r.height = min(s->r.height, q_data->crop_height);
+			s->r.height = min(s->r.height, q_data->height);
 			q_data->crop_width = s->r.width;
 			q_data->crop_height = s->r.height;
 			q_data->selection_set = true;
@@ -1629,6 +1891,43 @@ static int vidioc_s_selection(struct file *file, void *priv,
 		}
 		break;
 	case ISP:
+		break;
+	case DEINTERLACE:
+		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+			switch (s->target) {
+			case V4L2_SEL_TGT_COMPOSE:
+				/* Accept cropped image */
+				s->r.left = 0;
+				s->r.top = 0;
+				s->r.width = min(s->r.width, q_data->crop_width);
+				s->r.height = min(s->r.height, q_data->height);
+				q_data->crop_width = s->r.width;
+				q_data->crop_height = s->r.height;
+				q_data->selection_set = true;
+				break;
+			default:
+				return -EINVAL;
+			}
+			break;
+		} else {
+			/* must be V4L2_BUF_TYPE_VIDEO_OUTPUT */
+			switch (s->target) {
+			case V4L2_SEL_TGT_CROP:
+				/* Only support crop from (0,0) */
+				s->r.top = 0;
+				s->r.left = 0;
+				s->r.width = min(s->r.width, q_data->crop_width);
+				s->r.height = min(s->r.height, q_data->height);
+				q_data->crop_width = s->r.width;
+				q_data->crop_height = s->r.height;
+				q_data->selection_set = true;
+				break;
+			default:
+				return -EINVAL;
+			}
+			break;
+		}
+	case NUM_ROLES:
 		break;
 	}
 
@@ -1789,6 +2088,17 @@ static int bcm2835_codec_set_level_profile(struct bcm2835_codec_ctx *ctx,
 		case V4L2_MPEG_VIDEO_H264_LEVEL_4_0:
 			param.level = MMAL_VIDEO_LEVEL_H264_4;
 			break;
+		/*
+		 * Note that the hardware spec is level 4.0. Levels above that
+		 * are there for correctly encoding the headers and may not
+		 * be able to keep up with real-time.
+		 */
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_1:
+			param.level = MMAL_VIDEO_LEVEL_H264_41;
+			break;
+		case V4L2_MPEG_VIDEO_H264_LEVEL_4_2:
+			param.level = MMAL_VIDEO_LEVEL_H264_42;
+			break;
 		default:
 			/* Should never get here */
 			break;
@@ -1886,6 +2196,28 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = bcm2835_codec_set_level_profile(ctx, ctrl);
 		break;
 
+	case V4L2_CID_MPEG_VIDEO_H264_MIN_QP:
+		if (!ctx->component)
+			break;
+
+		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						    &ctx->component->output[0],
+						    MMAL_PARAMETER_VIDEO_ENCODE_MIN_QUANT,
+						    &ctrl->val,
+						    sizeof(ctrl->val));
+		break;
+
+	case V4L2_CID_MPEG_VIDEO_H264_MAX_QP:
+		if (!ctx->component)
+			break;
+
+		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						    &ctx->component->output[0],
+						    MMAL_PARAMETER_VIDEO_ENCODE_MAX_QUANT,
+						    &ctrl->val,
+						    sizeof(ctrl->val));
+		break;
+
 	case V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME: {
 		u32 mmal_bool = 1;
 
@@ -1897,6 +2229,34 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 						    MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME,
 						    &mmal_bool,
 						    sizeof(mmal_bool));
+		break;
+	}
+	case V4L2_CID_HFLIP:
+	case V4L2_CID_VFLIP: {
+		u32 u32_value;
+
+		if (ctrl->id == V4L2_CID_HFLIP)
+			ctx->hflip = ctrl->val;
+		else
+			ctx->vflip = ctrl->val;
+
+		if (!ctx->component)
+			break;
+
+		if (ctx->hflip && ctx->vflip)
+			u32_value = MMAL_PARAM_MIRROR_BOTH;
+		else if (ctx->hflip)
+			u32_value = MMAL_PARAM_MIRROR_HORIZONTAL;
+		else if (ctx->vflip)
+			u32_value = MMAL_PARAM_MIRROR_VERTICAL;
+		else
+			u32_value = MMAL_PARAM_MIRROR_NONE;
+
+		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						    &ctx->component->input[0],
+						    MMAL_PARAMETER_MIRROR,
+						    &u32_value,
+						    sizeof(u32_value));
 		break;
 	}
 
@@ -2084,10 +2444,10 @@ static int vidioc_enum_framesizes(struct file *file, void *fh,
 
 	fsize->stepwise.min_width = MIN_W;
 	fsize->stepwise.max_width = MAX_W;
-	fsize->stepwise.step_width = 1;
+	fsize->stepwise.step_width = 2;
 	fsize->stepwise.min_height = MIN_H;
 	fsize->stepwise.max_height = MAX_H;
-	fsize->stepwise.step_height = 1;
+	fsize->stepwise.step_height = 2;
 
 	return 0;
 }
@@ -2134,33 +2494,6 @@ static const struct v4l2_ioctl_ops bcm2835_codec_ioctl_ops = {
 	.vidioc_enum_framesizes = vidioc_enum_framesizes,
 };
 
-static int bcm2835_codec_set_ctrls(struct bcm2835_codec_ctx *ctx)
-{
-	/*
-	 * Query the control handler for the value of the various controls and
-	 * set them.
-	 */
-	const u32 control_ids[] = {
-		V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
-		V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER,
-		V4L2_CID_MPEG_VIDEO_HEADER_MODE,
-		V4L2_CID_MPEG_VIDEO_H264_I_PERIOD,
-		V4L2_CID_MPEG_VIDEO_H264_LEVEL,
-		V4L2_CID_MPEG_VIDEO_H264_PROFILE,
-	};
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(control_ids); i++) {
-		struct v4l2_ctrl *ctrl;
-
-		ctrl = v4l2_ctrl_find(&ctx->hdl, control_ids[i]);
-		if (ctrl)
-			bcm2835_codec_s_ctrl(ctrl);
-	}
-
-	return 0;
-}
-
 static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 {
 	struct bcm2835_codec_dev *dev = ctx->dev;
@@ -2193,13 +2526,49 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 					      MMAL_PARAMETER_VIDEO_VALIDATE_TIMESTAMPS,
 					      &enable,
 					      sizeof(enable));
+		/*
+		 * Enable firmware option to stop on colourspace and pixel
+		 * aspect ratio changed
+		 */
+		enable = 1;
+		vchiq_mmal_port_parameter_set(dev->instance,
+					      &ctx->component->control,
+					      MMAL_PARAMETER_VIDEO_STOP_ON_PAR_COLOUR_CHANGE,
+					      &enable,
+					      sizeof(enable));
+	} else if (dev->role == DEINTERLACE) {
+		/* Select the default deinterlace algorithm. */
+		int half_framerate = 0;
+		int default_frame_interval = -1; /* don't interpolate */
+		int frame_type = 5; /* 0=progressive, 3=TFF, 4=BFF, 5=see frame */
+		int use_qpus = 0;
+		enum mmal_parameter_imagefx effect =
+			advanced_deinterlace && ctx->q_data[V4L2_M2M_SRC].crop_width <= 800 ?
+			MMAL_PARAM_IMAGEFX_DEINTERLACE_ADV :
+			MMAL_PARAM_IMAGEFX_DEINTERLACE_FAST;
+		struct mmal_parameter_imagefx_parameters params = {
+			.effect = effect,
+			.num_effect_params = 4,
+			.effect_parameter = { frame_type,
+					      default_frame_interval,
+					      half_framerate,
+					      use_qpus },
+		};
+
+		vchiq_mmal_port_parameter_set(dev->instance,
+					      &ctx->component->output[0],
+					      MMAL_PARAMETER_IMAGE_EFFECT_PARAMETERS,
+					      &params,
+					      sizeof(params));
 	}
 
 	setup_mmal_port_format(ctx, &ctx->q_data[V4L2_M2M_SRC],
 			       &ctx->component->input[0]);
+	ctx->component->input[0].cb_ctx = ctx;
 
 	setup_mmal_port_format(ctx, &ctx->q_data[V4L2_M2M_DST],
 			       &ctx->component->output[0]);
+	ctx->component->output[0].cb_ctx = ctx;
 
 	ret = vchiq_mmal_port_set_format(dev->instance,
 					 &ctx->component->input[0]);
@@ -2227,9 +2596,6 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 			v4l2_err(&dev->v4l2_dev, "buffer size mismatch sizeimage %u < min size %u\n",
 				 ctx->q_data[V4L2_M2M_SRC].sizeimage,
 				 ctx->component->output[0].minimum_buffer.size);
-
-		/* Now we have a component we can set all the ctrls */
-		bcm2835_codec_set_ctrls(ctx);
 
 		/* Enable SPS Timing header so framerate information is encoded
 		 * in the H264 header.
@@ -2259,6 +2625,10 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 				 ctx->q_data[V4L2_M2M_DST].sizeimage,
 				 ctx->component->output[0].minimum_buffer.size);
 	}
+
+	/* Now we have a component we can set all the ctrls */
+	ret = v4l2_ctrl_handler_setup(&ctx->hdl);
+
 	v4l2_dbg(2, debug, &dev->v4l2_dev, "%s: component created as %s\n",
 		 __func__, components[dev->role]);
 
@@ -2364,11 +2734,6 @@ static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
 	if (V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type)) {
 		if (vbuf->field == V4L2_FIELD_ANY)
 			vbuf->field = V4L2_FIELD_NONE;
-		if (vbuf->field != V4L2_FIELD_NONE) {
-			v4l2_err(&ctx->dev->v4l2_dev, "%s field isn't supported\n",
-				 __func__);
-			return -EINVAL;
-		}
 	}
 
 	if (vb2_plane_size(vb, 0) < q_data->sizeimage) {
@@ -2459,6 +2824,23 @@ static void bcm2835_codec_buffer_cleanup(struct vb2_buffer *vb)
 	bcm2835_codec_mmal_buf_cleanup(&buf->mmal);
 }
 
+static void bcm2835_codec_flush_buffers(struct bcm2835_codec_ctx *ctx,
+					struct vchiq_mmal_port *port)
+{
+	int ret;
+
+	if (atomic_read(&port->buffers_with_vpu)) {
+		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Waiting for buffers to be returned - %d outstanding\n",
+			 __func__, atomic_read(&port->buffers_with_vpu));
+		ret = wait_for_completion_timeout(&ctx->frame_cmplt,
+						  COMPLETE_TIMEOUT);
+		if (ret <= 0) {
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Timeout waiting for buffers to be returned - %d outstanding\n",
+				 __func__,
+				 atomic_read(&port->buffers_with_vpu));
+		}
+	}
+}
 static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 					 unsigned int count)
 {
@@ -2466,7 +2848,7 @@ static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 	struct bcm2835_codec_dev *dev = ctx->dev;
 	struct bcm2835_codec_q_data *q_data = get_q_data(ctx, q->type);
 	struct vchiq_mmal_port *port = get_port_data(ctx, q->type);
-	int ret;
+	int ret = 0;
 
 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: type: %d count %d\n",
 		 __func__, q->type, count);
@@ -2479,6 +2861,34 @@ static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling component, ret %d\n",
 				 __func__, ret);
 		ctx->component_enabled = true;
+	}
+
+	if (port->enabled) {
+		unsigned int num_buffers;
+
+		init_completion(&ctx->frame_cmplt);
+
+		/*
+		 * This should only ever happen with DECODE and the MMAL output
+		 * port that has been enabled for resolution changed events.
+		 * In this case no buffers have been allocated or sent to the
+		 * component, so warn on that.
+		 */
+		WARN_ON(ctx->dev->role != DECODE);
+		WARN_ON(q->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+		WARN_ON(atomic_read(&port->buffers_with_vpu));
+
+		/*
+		 * Disable will reread the port format, so retain buffer count.
+		 */
+		num_buffers = port->current_buffer.num;
+
+		ret = vchiq_mmal_port_disable(dev->instance, port);
+		if (ret)
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Error disabling port update buffer count, ret %d\n",
+				 __func__, ret);
+		bcm2835_codec_flush_buffers(ctx, port);
+		port->current_buffer.num = num_buffers;
 	}
 
 	if (count < port->minimum_buffer.num)
@@ -2495,6 +2905,22 @@ static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 				 __func__, ret);
 	}
 
+	if (dev->role == DECODE &&
+	    q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
+	    !ctx->component->output[0].enabled) {
+		/*
+		 * Decode needs to enable the MMAL output/V4L2 CAPTURE
+		 * port at this point too so that we have everything
+		 * set up for dynamic resolution changes.
+		 */
+		ret = vchiq_mmal_port_enable(dev->instance,
+					     &ctx->component->output[0],
+					     op_buffer_cb);
+		if (ret)
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
+				 __func__, ret);
+	}
+
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/*
 		 * Create the EOS buffer.
@@ -2506,7 +2932,6 @@ static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 				      &q_data->eos_buffer.mmal);
 		q_data->eos_buffer_in_use = false;
 
-		port->cb_ctx = ctx;
 		ret = vchiq_mmal_port_enable(dev->instance,
 					     port,
 					     ip_buffer_cb);
@@ -2514,14 +2939,17 @@ static int bcm2835_codec_start_streaming(struct vb2_queue *q,
 			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling i/p port, ret %d\n",
 				 __func__, ret);
 	} else {
-		port->cb_ctx = ctx;
-		ret = vchiq_mmal_port_enable(dev->instance,
-					     port,
-					     op_buffer_cb);
-		if (ret)
-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
-				 __func__, ret);
+		if (!port->enabled) {
+			ret = vchiq_mmal_port_enable(dev->instance,
+						     port,
+						     op_buffer_cb);
+			if (ret)
+				v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
+					 __func__, ret);
+		}
 	}
+	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Done, ret %d\n",
+		 __func__, ret);
 	return ret;
 }
 
@@ -2550,7 +2978,7 @@ static void bcm2835_codec_stop_streaming(struct vb2_queue *q)
 		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: return buffer %p\n",
 			 __func__, vbuf);
 
-		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_QUEUED);
 	}
 
 	/* Disable MMAL port - this will flush buffers back */
@@ -2560,17 +2988,21 @@ static void bcm2835_codec_stop_streaming(struct vb2_queue *q)
 			 __func__, V4L2_TYPE_IS_OUTPUT(q->type) ? "i/p" : "o/p",
 			 ret);
 
-	while (atomic_read(&port->buffers_with_vpu)) {
-		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Waiting for buffers to be returned - %d outstanding\n",
-			 __func__, atomic_read(&port->buffers_with_vpu));
-		ret = wait_for_completion_timeout(&ctx->frame_cmplt,
-						  COMPLETE_TIMEOUT);
-		if (ret <= 0) {
-			v4l2_err(&ctx->dev->v4l2_dev, "%s: Timeout waiting for buffers to be returned - %d outstanding\n",
-				 __func__,
-				 atomic_read(&port->buffers_with_vpu));
-			break;
-		}
+	bcm2835_codec_flush_buffers(ctx, port);
+
+	if (dev->role == DECODE &&
+	    q->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+	    ctx->component->input[0].enabled) {
+		/*
+		 * For decode we need to keep the MMAL output port enabled for
+		 * resolution changed events whenever the input is enabled.
+		 */
+		ret = vchiq_mmal_port_enable(dev->instance,
+					     &ctx->component->output[0],
+					     op_buffer_cb);
+		if (ret)
+			v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed enabling o/p port, ret %d\n",
+				 __func__, ret);
 	}
 
 	/* If both ports disabled, then disable the component */
@@ -2664,19 +3096,22 @@ static int bcm2835_codec_open(struct file *file)
 	ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_SRC].bytesperline =
 			get_bytesperline(DEFAULT_WIDTH,
-					 ctx->q_data[V4L2_M2M_SRC].fmt);
+					 ctx->q_data[V4L2_M2M_SRC].fmt,
+					 dev->role);
 	ctx->q_data[V4L2_M2M_SRC].sizeimage =
 		get_sizeimage(ctx->q_data[V4L2_M2M_SRC].bytesperline,
 			      ctx->q_data[V4L2_M2M_SRC].crop_width,
 			      ctx->q_data[V4L2_M2M_SRC].height,
 			      ctx->q_data[V4L2_M2M_SRC].fmt);
+	ctx->q_data[V4L2_M2M_SRC].field = V4L2_FIELD_NONE;
 
 	ctx->q_data[V4L2_M2M_DST].crop_width = DEFAULT_WIDTH;
 	ctx->q_data[V4L2_M2M_DST].crop_height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_DST].bytesperline =
 			get_bytesperline(DEFAULT_WIDTH,
-					 ctx->q_data[V4L2_M2M_DST].fmt);
+					 ctx->q_data[V4L2_M2M_DST].fmt,
+					 dev->role);
 	ctx->q_data[V4L2_M2M_DST].sizeimage =
 		get_sizeimage(ctx->q_data[V4L2_M2M_DST].bytesperline,
 			      ctx->q_data[V4L2_M2M_DST].crop_width,
@@ -2684,6 +3119,7 @@ static int bcm2835_codec_open(struct file *file)
 			      ctx->q_data[V4L2_M2M_DST].fmt);
 	ctx->q_data[V4L2_M2M_DST].aspect_ratio.numerator = 1;
 	ctx->q_data[V4L2_M2M_DST].aspect_ratio.denominator = 1;
+	ctx->q_data[V4L2_M2M_DST].field = V4L2_FIELD_NONE;
 
 	ctx->colorspace = V4L2_COLORSPACE_REC709;
 	ctx->bitrate = 10 * 1000 * 1000;
@@ -2696,9 +3132,11 @@ static int bcm2835_codec_open(struct file *file)
 	file->private_data = &ctx->fh;
 	ctx->dev = dev;
 	hdl = &ctx->hdl;
-	if (dev->role == ENCODE) {
+	switch (dev->role) {
+	case ENCODE:
+	{
 		/* Encode controls */
-		v4l2_ctrl_handler_init(hdl, 9);
+		v4l2_ctrl_handler_init(hdl, 11);
 
 		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
 				       V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
@@ -2747,6 +3185,14 @@ static int bcm2835_codec_open(struct file *file)
 					 BIT(V4L2_MPEG_VIDEO_H264_PROFILE_HIGH)),
 					V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
 		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_MPEG_VIDEO_H264_MIN_QP,
+				  0, 51,
+				  1, 20);
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_MPEG_VIDEO_H264_MAX_QP,
+				  0, 51,
+				  1, 51);
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
 				  V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
 				  0, 0, 0, 0);
 		if (hdl->error) {
@@ -2755,7 +3201,10 @@ static int bcm2835_codec_open(struct file *file)
 		}
 		ctx->fh.ctrl_handler = hdl;
 		v4l2_ctrl_handler_setup(hdl);
-	} else if (dev->role == DECODE) {
+	}
+	break;
+	case DECODE:
+	{
 		v4l2_ctrl_handler_init(hdl, 1);
 
 		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
@@ -2767,6 +3216,33 @@ static int bcm2835_codec_open(struct file *file)
 		}
 		ctx->fh.ctrl_handler = hdl;
 		v4l2_ctrl_handler_setup(hdl);
+	}
+	break;
+	case ISP:
+	{
+		v4l2_ctrl_handler_init(hdl, 2);
+
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_HFLIP,
+				  1, 0, 1, 0);
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_VFLIP,
+				  1, 0, 1, 0);
+		if (hdl->error) {
+			rc = hdl->error;
+			goto free_ctrl_handler;
+		}
+		ctx->fh.ctrl_handler = hdl;
+		v4l2_ctrl_handler_setup(hdl);
+	}
+	break;
+	case DEINTERLACE:
+	{
+		v4l2_ctrl_handler_init(hdl, 0);
+	}
+	break;
+	case NUM_ROLES:
+	break;
 	}
 
 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx, &queue_init);
@@ -3034,6 +3510,16 @@ static int bcm2835_codec_create(struct bcm2835_codec_driver *drv,
 		function = MEDIA_ENT_F_PROC_VIDEO_SCALER;
 		video_nr = isp_video_nr;
 		break;
+	case DEINTERLACE:
+		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
+		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
+		function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
+		video_nr = deinterlace_video_nr;
+		break;
 	default:
 		ret = -EINVAL;
 		goto unreg_dev;
@@ -3129,6 +3615,10 @@ static int bcm2835_codec_probe(struct platform_device *pdev)
 	if (ret)
 		goto out;
 
+	ret = bcm2835_codec_create(drv, &drv->deinterlace, DEINTERLACE);
+	if (ret)
+		goto out;
+
 	/* Register the media device node */
 	if (media_device_register(mdev) < 0)
 		goto out;
@@ -3138,6 +3628,10 @@ static int bcm2835_codec_probe(struct platform_device *pdev)
 	return 0;
 
 out:
+	if (drv->deinterlace) {
+		bcm2835_codec_destroy(drv->deinterlace);
+		drv->deinterlace = NULL;
+	}
 	if (drv->isp) {
 		bcm2835_codec_destroy(drv->isp);
 		drv->isp = NULL;
@@ -3158,6 +3652,8 @@ static int bcm2835_codec_remove(struct platform_device *pdev)
 	struct bcm2835_codec_driver *drv = platform_get_drvdata(pdev);
 
 	media_device_unregister(&drv->mdev);
+
+	bcm2835_codec_destroy(drv->deinterlace);
 
 	bcm2835_codec_destroy(drv->isp);
 

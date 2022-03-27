@@ -62,7 +62,7 @@ struct nvram_parser {
 	bool boardrev_found;
 };
 
-/*
+/**
  * is_nvram_char() - check if char is a valid one for NVRAM entry
  *
  * It accepts all printable ASCII chars except for '#' which opens a comment.
@@ -632,7 +632,7 @@ static int brcmf_fw_request_firmware(const struct firmware **fw,
 		strlcat(alt_path, fwctx->req->board_type, BRCMF_FW_NAME_LEN);
 		strlcat(alt_path, ".txt", BRCMF_FW_NAME_LEN);
 
-		ret = firmware_request_nowarn(fw, alt_path, fwctx->dev);
+		ret = request_firmware(fw, alt_path, fwctx->dev);
 		if (ret == 0)
 			return ret;
 	}

@@ -63,12 +63,7 @@ void __brcmf_err(struct brcmf_bus *bus, const char *func, const char *fmt, ...);
 #if defined(DEBUG) || defined(CONFIG_BRCM_TRACING)
 
 /* For debug/tracing purposes treat info messages as errors */
-// #define brcmf_info brcmf_err
-
-#define brcmf_info(fmt, ...)						\
-	do {								\
-		pr_info("%s: " fmt, __func__, ##__VA_ARGS__);		\
-	} while (0)
+#define brcmf_info brcmf_err
 
 __printf(3, 4)
 void __brcmf_dbg(u32 level, const char *func, const char *fmt, ...);
@@ -133,7 +128,8 @@ static inline struct dentry *brcmf_debugfs_get_devdir(struct brcmf_pub *drvr)
 static inline
 void brcmf_debugfs_add_entry(struct brcmf_pub *drvr, const char *fn,
 			     int (*read_fn)(struct seq_file *seq, void *data))
-{ }
+{
+}
 static inline
 int brcmf_debug_create_memdump(struct brcmf_bus *bus, const void *data,
 			       size_t len)

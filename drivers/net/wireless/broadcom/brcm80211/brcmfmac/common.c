@@ -59,7 +59,7 @@ static int brcmf_fcmode;
 module_param_named(fcmode, brcmf_fcmode, int, 0);
 MODULE_PARM_DESC(fcmode, "Mode of firmware signalled flow control");
 
-static int brcmf_roamoff = 1;
+static int brcmf_roamoff;
 module_param_named(roamoff, brcmf_roamoff, int, 0400);
 MODULE_PARM_DESC(roamoff, "Do not use internal roaming engine");
 
@@ -134,23 +134,13 @@ static int brcmf_c_process_clm_blob(struct brcmf_if *ifp)
 	brcmf_dbg(TRACE, "Enter\n");
 
 	memset(clm_name, 0, sizeof(clm_name));
-	err = brcmf_bus_get_board_fwname(bus, ".clm_blob", clm_name);
+	err = brcmf_bus_get_fwname(bus, ".clm_blob", clm_name);
 	if (err) {
 		bphy_err(drvr, "get CLM blob file name failed (%d)\n", err);
 		return err;
 	}
 
-	if (clm_name[0])
-		err = firmware_request_nowarn(&clm, clm_name, bus->dev);
-	if (err || !clm_name[0]) {
-		err = brcmf_bus_get_fwname(bus, ".clm_blob", clm_name);
-		if (err) {
-			bphy_err(drvr, "get CLM blob file name failed (%d)\n", err);
-			return err;
-		}
-
-		err = firmware_request_nowarn(&clm, clm_name, bus->dev);
-	}
+	err = firmware_request_nowarn(&clm, clm_name, bus->dev);
 	if (err) {
 		brcmf_info("no clm_blob available (err=%d), device may have limited channels available\n",
 			   err);
@@ -219,8 +209,8 @@ int brcmf_c_preinit_dcmds(struct brcmf_if *ifp)
 		bphy_err(drvr, "Retrieving cur_etheraddr failed, %d\n", err);
 		goto done;
 	}
-	memcpy(ifp->drvr->mac, ifp->mac_addr, sizeof(ifp->drvr->mac));
 	memcpy(ifp->drvr->wiphy->perm_addr, ifp->drvr->mac, ETH_ALEN);
+	memcpy(ifp->drvr->mac, ifp->mac_addr, sizeof(ifp->drvr->mac));
 
 	bus = ifp->drvr->bus_if;
 	ri = &ifp->drvr->revinfo;

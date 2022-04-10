@@ -48,9 +48,9 @@ struct dentry *brcmf_debugfs_get_devdir(struct brcmf_pub *drvr)
 }
 
 void brcmf_debugfs_add_entry(struct brcmf_pub *drvr, const char *fn,
-			    int (*read_fn)(struct seq_file *seq, void *data))
+			     int (*read_fn)(struct seq_file *seq, void *data))
 {
 	WARN(!drvr->wiphy->debugfsdir, "wiphy not (yet) registered\n");
 	debugfs_create_devm_seqfile(drvr->bus_if->dev, fn,
-				    drvr->wiphy->debugfsdir, read_fn);
+					drvr->wiphy->debugfsdir, read_fn);
 }

@@ -78,7 +78,7 @@ struct brcmf_bus_ops {
 	size_t (*get_ramsize)(struct device *dev);
 	int (*get_memdump)(struct device *dev, void *data, size_t len);
 	int (*get_fwname)(struct device *dev, const char *ext,
-			  unsigned char *fw_name, bool board_specific);
+			  unsigned char *fw_name);
 	void (*debugfs_create)(struct device *dev);
 	int (*reset)(struct device *dev);
 };
@@ -223,14 +223,7 @@ static inline
 int brcmf_bus_get_fwname(struct brcmf_bus *bus, const char *ext,
 			 unsigned char *fw_name)
 {
-	return bus->ops->get_fwname(bus->dev, ext, fw_name, false);
-}
-
-static inline
-int brcmf_bus_get_board_fwname(struct brcmf_bus *bus, const char *ext,
-			       unsigned char *fw_name)
-{
-	return bus->ops->get_fwname(bus->dev, ext, fw_name, true);
+	return bus->ops->get_fwname(bus->dev, ext, fw_name);
 }
 
 static inline
@@ -256,8 +249,7 @@ int brcmf_bus_reset(struct brcmf_bus *bus)
  */
 
 /* Receive frame for delivery to OS.  Callee disposes of rxp. */
-void brcmf_rx_frame(struct device *dev, struct sk_buff *rxp, bool handle_event,
-		    bool inirq);
+void brcmf_rx_frame(struct device *dev, struct sk_buff *rxp, bool handle_event);
 /* Receive async event packet from firmware. Callee disposes of rxp. */
 void brcmf_rx_event(struct device *dev, struct sk_buff *rxp);
 
@@ -282,26 +274,11 @@ void brcmf_bus_add_txhdrlen(struct device *dev, uint len);
 
 #ifdef CONFIG_BRCMFMAC_SDIO
 void brcmf_sdio_exit(void);
-int brcmf_sdio_register(void);
-#else
-static inline void brcmf_sdio_exit(void) { }
-static inline int brcmf_sdio_register(void) { return 0; }
+void brcmf_sdio_register(void);
 #endif
-
 #ifdef CONFIG_BRCMFMAC_USB
 void brcmf_usb_exit(void);
-int brcmf_usb_register(void);
-#else
-static inline void brcmf_usb_exit(void) { }
-static inline int brcmf_usb_register(void) { return 0; }
-#endif
-
-#ifdef CONFIG_BRCMFMAC_PCIE
-void brcmf_pcie_exit(void);
-int brcmf_pcie_register(void);
-#else
-static inline void brcmf_pcie_exit(void) { }
-static inline int brcmf_pcie_register(void) { return 0; }
+void brcmf_usb_register(void);
 #endif
 
 #endif /* BRCMFMAC_BUS_H */

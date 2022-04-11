@@ -1,0 +1,15 @@
+./dtc.sh 4dpi-32
+./dtc.sh 4dpi-35
+./dtc.sh 4dpi-43
+./dtc.sh 4dpi-43ct
+./dtc.sh 4dpi-50
+./dtc.sh 4dpi-50ct
+./dtc.sh 4dpi-70
+./dtc.sh 4dpi-70ct
+./dtc.sh 4dpi-90
+./dtc.sh 4dpi-90ct
+./dtc.sh 24-hat
+./dtc.sh 32-hat
+./dtc.sh 32CT-hat
+./dtc.sh 35-hat
+./dtc.sh 35b-hat

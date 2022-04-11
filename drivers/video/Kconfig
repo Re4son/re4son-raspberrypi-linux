@@ -37,6 +37,8 @@ config HDMI
 
 endif # HAS_IOMEM
 
+source "drivers/video/gen4-hats/Kconfig"
+
 if VT
 	source "drivers/video/console/Kconfig"
 endif

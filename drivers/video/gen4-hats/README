@@ -1,0 +1,83 @@
+INSTALLATION
+
+  Download kernel sources (example: git clone --depth=1 https://github.com/raspberrypi/linux)
+
+  From linux directory (~/linux/):
+    
+	cd drivers/video
+    git clone https://bitbucket.org/4DPi/gen4-hats.git 
+
+  then:  
+
+    nano Kconfig
+    
+    	Add to drivers/video/Kconfig:   source "drivers/video/gen4-hats/Kconfig"
+    	----------------EXAMPLE-------------------
+    	config HDMI
+    	        bool
+
+    	source "drivers/video/gen4-hats/Kconfig"
+    	if VT
+    	        source "drivers/video/console/Kconfig"
+    	endif
+    	------------------------------------------
+
+    nano Makefile
+
+    	Add to drivers/video/Makefile:  obj-y += gen4-hats/
+    	----------------EXAMPLE-------------------
+    	obj-y                                   += fbdev/
+    	obj-y                                   += gen4-hats/
+	
+    	obj-$(CONFIG_VIDEOMODE_HELPERS) += display_timing.o videomode.o
+	
+    	------------------------------------------
+
+  Go back to linux directory (~/linux/)
+  
+  Setup the following variables:
+
+a. For Raspberry Pi 0/1:
+
+	KERNEL=kernel_hat 
+	CONFIG=bcmrpi_defconfig
+
+b. For Raspberry Pi 2/3:
+
+	KERNEL=kernel7_hat 
+	CONFIG=bcm2709_defconfig
+
+c. For Raspberry Pi 4:
+
+	KERNEL=kernel7l_hat 
+	CONFIG=bcm2711_defconfig
+  
+  Open build configuration:
+
+	make $CONFIG 
+	make menuconfig
+
+  Disable default FT5x06 driver:  
+    Device Drivers --> Input device support --> Touchscreens
+    
+    < > EDT FocalTech FT5x06 I2C Touchscreen support
+  
+  Enable driver(s) in menuconfig and build the kernel:
+    Device Drivers --> Graphics support
+
+    <*> Support for 4D Systems display modules  --->
+        <*>   4D Systems LCD HAT support
+        <*>   DMA Enabled SPI Master Driver
+        <M>   Module for ADS7846 resistive touch screen controller
+    <M> Module for AR1020 resistive touch screen controller
+    <M> Module for FT5x06 capacitive touch screen controller
+    <M> Module for DMA supported PWM backlight driver
+
+  Compiling device tree overlays (only necessary if overlay sources are mofified):
+    recent dtc (device tree compiler) has to be installed. A script is provided.
+    For example DT overlay for 24-hat can be compiled with:
+
+    ./dtc.sh 24-hat
+
+    resulting .dtb files should be flashed to HAT EEPROMs or copied to:
+    /boot/overlays on RPi.

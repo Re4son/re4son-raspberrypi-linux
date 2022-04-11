@@ -1,0 +1,32 @@
+menuconfig 4DHATS
+        tristate "Support for 4D Systems display modules"
+        depends on FB
+        select FB_SYS_FILLRECT
+        select FB_SYS_COPYAREA
+        select FB_SYS_IMAGEBLIT
+        select FB_SYS_FOPS
+        select FB_DEFERRED_IO
+        select FB_BACKLIGHT
+
+config FB_HATS
+        tristate "4D Systems LCD HAT support"
+        depends on 4DHATS
+
+config 4DPI_SPI_DMA
+        tristate "DMA Enabled SPI Master Driver"
+        depends on 4DHATS
+
+config 4DPI_ADS7846
+        tristate "Module for ADS7846 resistive touch screen controller"
+        depends on 4DHATS
+
+config 4DPI_AR1020I2C
+        tristate "Module for AR1020 resistive touch screen controller"
+        depends on I2C
+
+config 4DPI_FT5X06
+        tristate "Module for FT5446 capacitive touch screen controller"
+        depends on I2C
+
+config 4DPI_PWMBL
+        tristate "Module for DMA supported PWM backlight driver"

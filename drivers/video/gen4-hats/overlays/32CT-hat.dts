@@ -1,0 +1,84 @@
+/*
+ * Device Tree overlay for 32-HAT by 4D Systems
+ *
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835", "brcm,bcm2708", "brcm,bcm2709";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+                        compatible = "brcm,bcm2708-spi-dma";
+			status = "okay";
+
+			spidev@0{
+				status = "disabled";
+			};
+		};
+	};
+
+        fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			/* needed to avoid dtc warning */
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rpidisplay: rpi-display@0{
+                                compatible = "4dsystems,32-hat";
+				reg = <0>;
+
+
+                                spi-max-frequency = <48000000>;
+                                /*
+                                rotate = <0>;
+                                rotate-codes = /bits/ 8 <0x03 0x05 0x00 0x06>;
+                                */
+                        };
+		};
+	};
+
+        fragment@2 {
+                target = <&i2c1>;
+                __overlay__ {
+                        #address-cells = <1>;
+                        #size-cells = <0>;
+                        status = "okay";
+
+			edt-ft5x06@38 {
+				compatible = "edt,edt-ft5406", "edt,edt-ft5x06";
+				reg = <0x38>;
+
+				interrupt-parent = <&gpio>;
+				interrupts = <17 2>;
+				ft,x-max = /bits/ 16 <320>;
+				ft,y-max = /bits/ 16 <240>;
+			};
+                };
+        };
+
+        fragment@3 {
+                target-path = "/soc";
+                __overlay__ {
+                        backlight {
+                                compatible = "4dsystems,dma-pwm";
+
+                                4d,pwmbl-gpio = /bits/ 16 <18>;
+                                4d,pwmbl-type = /bits/ 16 <2>;
+                                4d,pwmbl-brightness = /bits/ 16 <100>;
+                                4d,pwmbl-title = "32-hat-pwm";
+                        };
+                };
+        };
+
+
+/*        __overrides__ {
+                speed =   <&rpidisplay>,"spi-max-frequency:0";
+                rotate =  <&rpidisplay>,"rotate:0";
+        };
+*/
+};

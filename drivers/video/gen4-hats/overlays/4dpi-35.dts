@@ -1,0 +1,105 @@
+/*
+ * Device Tree overlay for 4DPi-35 by 4D Systems
+ *
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835", "brcm,bcm2708", "brcm,bcm2709";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+                        compatible = "brcm,bcm2708-spi-dma";
+			status = "okay";
+
+			spidev@0{
+				status = "disabled";
+			};
+
+			spidev@1{
+				status = "disabled";
+			};
+		};
+	};
+
+        fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			/* needed to avoid dtc warning */
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rpidisplay: rpi-display@0{
+                                compatible = "4dsystems,35b-hat";
+				reg = <0>;
+
+
+                                spi-max-frequency = <48000000>;
+			address-mode-codes = /bits/ 8 <0x28 0x48 0xE8 0x88>;
+
+                                /*
+                                rotate = <0>;
+                                rotate-codes = /bits/ 8 <0x03 0x05 0x00 0x06>;
+                                */
+                        };
+
+
+                        rpidisplay_ts: rpi-display-ts@1 {
+                                compatible = "ti,ads7846-4dpi3x";
+                                reg = <1>;
+
+                                spi-max-frequency = <1000000>;
+                                interrupts = <17 2>; /* high-to-low edge triggered */
+                                interrupt-parent = <&gpio>;
+                                pendown-gpio = <&gpio 17 0>;
+
+                                /*
+                                ti,swap-xy = /bits/ 16 <0>;
+                                ti,x-min = /bits/ 16 <280>;
+                                ti,x-max = /bits/ 16 <3830>;
+                                ti,y-min = /bits/ 16 <190>;
+                                ti,y-max = /bits/ 16 <3830>;
+                                */
+
+                                ti,x-min = /bits/ 16 <320>;
+                                ti,x-max = /bits/ 16 <3600>;
+                                ti,y-min = /bits/ 16 <220>;
+                                ti,y-max = /bits/ 16 <3400>;
+                                ti,vref-delay-usecs = /bits/ 16 <100>;
+
+                                ti,x-plate-ohms = /bits/ 16 <576>;
+                                ti,y-plate-ohms = /bits/ 16 <366>;
+
+                                ti,pressure-max = /bits/ 16 <15000>;
+
+                                ti,debounce-max = /bits/ 16 <5>;
+                                ti,debounce-rep = /bits/ 16 <1>;
+                                ti,debounce-tol = /bits/ 16 <8>;
+                        };
+		};
+	};
+
+        fragment@2 {
+                target-path = "/soc";
+                __overlay__ {
+                        backlight {
+                                compatible = "4dsystems,dma-pwm";
+
+                                4d,pwmbl-gpio = /bits/ 16 <18>;
+                                4d,pwmbl-type = /bits/ 16 <2>;
+                                4d,pwmbl-brightness = /bits/ 16 <100>;
+                                4d,pwmbl-title = "4dpi-35-pwm";
+                        };
+                };
+        };
+
+
+/*        __overrides__ {
+                speed =   <&rpidisplay>,"spi-max-frequency:0";
+                rotate =  <&rpidisplay>,"rotate:0";
+        };
+*/
+};

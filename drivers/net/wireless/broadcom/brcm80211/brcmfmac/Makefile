@@ -7,7 +7,8 @@
 
 ccflags-y += \
 	-I $(srctree)/$(src) \
-	-I $(srctree)/$(src)/../include
+	-I $(srctree)/$(src)/../include \
+    -DDEBUG
 
 obj-$(CONFIG_BRCMFMAC) += brcmfmac.o
 brcmfmac-objs += \
@@ -23,7 +24,8 @@ brcmfmac-objs += \
 		feature.o \
 		btcoex.o \
 		vendor.o \
-		pno.o
+		pno.o \
+		debug.o
 brcmfmac-$(CONFIG_BRCMFMAC_PROTO_BCDC) += \
 		bcdc.o \
 		fwsignal.o
@@ -38,11 +40,7 @@ brcmfmac-$(CONFIG_BRCMFMAC_USB) += \
 		usb.o
 brcmfmac-$(CONFIG_BRCMFMAC_PCIE) += \
 		pcie.o
-brcmfmac-$(CONFIG_BRCMDBG) += \
-		debug.o
 brcmfmac-$(CONFIG_BRCM_TRACING) += \
 		tracepoint.o
 brcmfmac-$(CONFIG_OF) += \
 		of.o
-brcmfmac-$(CONFIG_DMI) += \
-		dmi.o
